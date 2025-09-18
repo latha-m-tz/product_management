@@ -17,13 +17,7 @@ Route::get('/user', function (Request $request) {
 
 
 // Assemble routes
-Route::prefix('assemble')->group(function() {
-    Route::get('/', [AssembleController::class, 'index']);
-    Route::get('/{id}', [AssembleController::class, 'show']);
-    Route::post('/', [AssembleController::class, 'store']);
-    Route::put('/{id}', [AssembleController::class, 'update']);
-    Route::delete('/{id}', [AssembleController::class, 'destroy']);
-});
+
 
 Route::prefix('product-types')->group(function () {
     Route::get('/', [ProductTypeController::class, 'index']);
@@ -41,13 +35,7 @@ Route::prefix('product')->group(function() {
     Route::delete('/{id}', [ProductController::class, 'destroy']);
 });
 
-Route::prefix('testing')->group(function () {
-    Route::get('/', [TestingController::class, 'index']);
-    Route::get('/{id}', [TestingController::class, 'show']);
-    Route::post('/', [TestingController::class, 'store']);
-    Route::put('/{id}', [TestingController::class, 'update']);
-    Route::delete('/{id}', [TestingController::class, 'destroy']);
-});
+
 
 
 Route::post('/vendors/new', [VendorController::class, 'Vendorstore']);
