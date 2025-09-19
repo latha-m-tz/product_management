@@ -2,13 +2,12 @@
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\AssembleController;
 use App\Http\Controllers\ProductTypeController;
 use App\Http\Controllers\ProductController;
-use App\Http\Controllers\TestingController;
 use App\Http\Controllers\VendorController;
 use App\Http\Controllers\SparepartController;
 use App\Http\Controllers\CustomerController;
+use App\Http\Controllers\InventoryController;
 
 Route::get('/user', function (Request $request) {
     return $request->user();
@@ -51,3 +50,13 @@ Route::post('/customers', [CustomerController::class, 'store']);
 Route::get('customers/{id}/edit', [CustomerController::class, 'edit']);
 Route::put('customers/{id}', [CustomerController::class, 'update']);
 Route::delete('customers/del/{id}', [CustomerController::class, 'destroy']);
+
+
+
+Route::prefix('inventory')->group(function () {
+    Route::get('/', [InventoryController::class, 'index']);
+    Route::get('/{id}', [InventoryController::class, 'show']);
+    Route::post('/', [InventoryController::class, 'store']);
+    Route::put('/{id}', [InventoryController::class, 'update']);
+    Route::delete('/{id}', [InventoryController::class, 'destroy']);
+});
