@@ -151,4 +151,12 @@ public function destroy($id)
     }
 }
 
+public function index()
+    {
+        $customers = Customer::all();
+        return response()->json($customers);
+    }
+ 
+
+
 }

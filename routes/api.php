@@ -50,8 +50,7 @@ Route::post('/customers', [CustomerController::class, 'store']);
 Route::get('customers/{id}/edit', [CustomerController::class, 'edit']);
 Route::put('customers/{id}', [CustomerController::class, 'update']);
 Route::delete('customers/del/{id}', [CustomerController::class, 'destroy']);
-
-
+Route::get('/customers/get', [CustomerController::class, 'index']);
 
 Route::prefix('inventory')->group(function () {
     Route::get('/', [InventoryController::class, 'index']);
