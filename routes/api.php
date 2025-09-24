@@ -6,6 +6,7 @@ use App\Http\Controllers\ProductTypeController;
 use App\Http\Controllers\ProductController;
 use App\Http\Controllers\VendorController;
 use App\Http\Controllers\SparepartController;
+use App\Http\Controllers\SparepartPurchaseController;
 use App\Http\Controllers\CustomerController;
 use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\AuthController;
@@ -58,6 +59,20 @@ Route::get('customers/{id}/edit', [CustomerController::class, 'edit']);
 Route::put('customers/{id}', [CustomerController::class, 'update']);
 Route::delete('customers/del/{id}', [CustomerController::class, 'destroy']);
 Route::get('/customers/get', [CustomerController::class, 'index']);
+Route::get('/customers/{id}', [CustomerController::class, 'show']);
+
+Route::post('/spareparts', [SparepartController::class, 'store']);
+Route::get('/spareparts/{id}/edit', [SparepartController::class, 'edit']);
+Route::put('/spareparts/{id}', [SparepartController::class, 'update']);
+Route::delete('/spareparts/{id}/del', [SparepartController::class, 'destroy']);
+Route::get('/spareparts/get', [SparepartController::class, 'index']);
+
+Route::get('/get-spareparts', [SparepartPurchaseController::class, 'getAvailableSpareparts']);
+Route::post('/sparepartNew-purchases', [SparepartPurchaseController::class, 'store']);
+Route::get('/sparepart-purchases', [SparepartPurchaseController::class, 'index']);
+Route::get('{id}/purchase/edit', [SparepartPurchaseController::class, 'edit']);
+Route::put('/purchaseUpdate/{id}', [SparepartPurchaseController::class, 'update']);
+
 
 Route::get('/inventory/serial-numbers', [InventoryController::class, 'serialNumbers']);
 Route::prefix('inventory')->group(function () {
