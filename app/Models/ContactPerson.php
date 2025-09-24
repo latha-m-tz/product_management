@@ -12,8 +12,13 @@ class ContactPerson extends Model
     
     protected $fillable = [
         'vendor_id', 'name', 'designation', 'mobile_no',
-        'alt_mobile_no', 'email', 'status','is_main', 
+         'email', 'status','is_main', 
     ];
+
+    protected $casts = [
+    'is_main' => 'boolean',
+];
+
 
     
     public function vendor()

@@ -13,7 +13,7 @@ class Vendor extends Model
        protected $fillable = [
         'vendor', 'gst_no', 'email', 'pincode',
         'city', 'state', 'district', 'address',
-        'mobile_no', 'alt_mobile_no', 'status'
+        'mobile_no', 'status'
     ];
 
     public function contactPersons()
