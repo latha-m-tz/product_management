@@ -8,14 +8,21 @@ use App\Http\Controllers\VendorController;
 use App\Http\Controllers\SparepartController;
 use App\Http\Controllers\CustomerController;
 use App\Http\Controllers\InventoryController;
+use App\Http\Controllers\AuthController;
+use App\Http\Controllers\SalesController;
+use App\Http\Controllers\ServiceVCIManagementController;
+use App\Http\Controllers\BarcodeController;
 
-Route::get('/user', function (Request $request) {
+// Route::get('/user', function (Request $request) {
+//     return $request->user();
+// })->middleware('auth:sanctum');
+
+
+Route::middleware('auth:api')->get('/user', function (Request $request) {
     return $request->user();
-})->middleware('auth:sanctum');
+}); 
 
 
-
-// Assemble routes
 
 
 Route::prefix('product-types')->group(function () {
@@ -52,6 +59,7 @@ Route::put('customers/{id}', [CustomerController::class, 'update']);
 Route::delete('customers/del/{id}', [CustomerController::class, 'destroy']);
 Route::get('/customers/get', [CustomerController::class, 'index']);
 
+Route::get('/inventory/serial-numbers', [InventoryController::class, 'serialNumbers']);
 Route::prefix('inventory')->group(function () {
     Route::get('/', [InventoryController::class, 'index']);
     Route::get('/{id}', [InventoryController::class, 'show']);
@@ -59,3 +67,21 @@ Route::prefix('inventory')->group(function () {
     Route::put('/{id}', [InventoryController::class, 'update']);
     Route::delete('/{id}', [InventoryController::class, 'destroy']);
 });
+
+
+//Sales
+Route::get('/sales', [SalesController::class, 'index']);        
+Route::post('/sales', [SalesController::class, 'store']);       
+Route::get('/sales/{id}', [SalesController::class, 'show']);     
+Route::put('/sales/{id}', [SalesController::class, 'update']);   
+Route::delete('/sales/{id}', [SalesController::class, 'destroy']);
+Route::get('/testings', [SalesController::class, 'getTestingData']);
+
+
+//service
+Route::get('/service-vci', [ServiceVCIManagementController::class, 'index']);
+Route::post('/service-vci', [ServiceVCIManagementController::class, 'store']);
+Route::get('/service-vci/{id}', [ServiceVCIManagementController::class, 'show']);
+Route::put('/service-vci/{id}', [ServiceVCIManagementController::class, 'update']);
+Route::delete('/service-vci/{id}', [ServiceVCIManagementController::class, 'destroy']);
+Route::get('/barcode/{barcode}', [BarcodeController::class, 'getProductInfo']);

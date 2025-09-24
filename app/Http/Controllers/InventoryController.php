@@ -4,24 +4,52 @@ namespace App\Http\Controllers;
 
 use App\Models\Inventory;
 use Illuminate\Http\Request;
+use App\Models\SaleItem;
 
 class InventoryController extends Controller
 {
-    // List all inventory items
-    public function index()
+     public function index(Request $request)
     {
-        $inventory = Inventory::with(['product', 'tester'])->paginate(10);
+        $query = Inventory::with(['product', 'tester']);
+
+        if ($request->filled('serial_from')) {
+            $query->where('serial_no', '>=', $request->serial_from);
+        }
+        if ($request->filled('serial_to')) {
+            $query->where('serial_no', '<=', $request->serial_to);
+        }
+
+        if ($request->filled('tested_status')) {
+            $query->where('tested_status', $request->tested_status);
+        }
+
+        if ($request->filled('product_id')) {
+            $query->where('product_id', $request->product_id);
+        }
+
+
+        $soldIds = SaleItem::pluck('testing_id')->toArray();
+        if (!empty($soldIds)) {
+            $query->whereNotIn('id', $soldIds);
+        }
+
+        $inventory = $query->paginate(10);
+
         return response()->json($inventory);
     }
 
-    // Show single inventory item
+    public function SerialNumbers()
+    {
+        $serials = Inventory::select('id', 'serial_no')->get();
+        return response()->json($serials);
+    }
+
     public function show($id)
     {
         $item = Inventory::with(['product', 'tester'])->findOrFail($id);
         return response()->json($item);
     }
 
-    // Create new inventory item
     public function store(Request $request)
     {
         $validated = $request->validate([
@@ -51,7 +79,6 @@ class InventoryController extends Controller
         return response()->json(['message' => 'Inventory added successfully']);
     }
 
-    // Update existing inventory item
     public function update(Request $request, $id)
     {
         $item = Inventory::findOrFail($id);
@@ -76,7 +103,6 @@ class InventoryController extends Controller
         ]);
     }
 
-    // Soft delete inventory item
     public function destroy($id)
     {
         $item = Inventory::findOrFail($id);

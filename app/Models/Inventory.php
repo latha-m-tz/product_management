@@ -56,4 +56,19 @@ class Inventory extends Model
     {
         return $this->belongsTo(User::class, 'deleted_by');
     }
+
+    public function saleItems()
+    {
+        return $this->hasMany(SaleItem::class, 'testing_id');
+    }
+    public function serviceItems()
+    {
+        return $this->hasMany(VCIServiceItem::class, 'vci_serial_no', 'serial_no');
+    }
+    
+    public function sales()
+{
+    return $this->hasManyThrough(Sale::class, SaleItem::class, 'testing_id', 'id', 'id', 'sale_id');
+}
+
 }
