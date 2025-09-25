@@ -5,6 +5,8 @@ namespace App\Http\Controllers;
 use App\Models\ProductType;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Validation\Rule;
+use Illuminate\Support\Facades\Log;
 
 class ProductTypeController extends Controller
 {
@@ -30,10 +32,29 @@ class ProductTypeController extends Controller
     }
 
     // Create product type
-    public function store(Request $request)
+      public function store(Request $request)
     {
         $validated = $request->validate([
-            'name' => 'required|unique:product_type,name',
+            'name' => [
+                'required',
+                'string',
+                'max:255',
+                function ($attribute, $value, $fail) use ($request) {
+                    $exists = ProductType::where('name', $value)
+                        ->where('product_id', $request->product_id)
+                        ->whereNull('deleted_at')
+                        ->exists();
+
+                    Log::info('Store check duplicate', [
+                        'exists' => $exists,
+                        'product_id' => $request->product_id,
+                    ]);
+
+                    if ($exists) {
+                        $fail("The $attribute has already been taken for this product.");
+                    }
+                },
+            ],
             'product_id' => 'required|exists:product,id',
         ]);
 
@@ -54,7 +75,28 @@ class ProductTypeController extends Controller
         }
 
         $validated = $request->validate([
-            'name' => 'required|unique:product_type,name,' . $id,
+            'name' => [
+                'required',
+                'string',
+                'max:255',
+                function ($attribute, $value, $fail) use ($request, $id) {
+                    $exists = ProductType::where('name', $value)
+                        ->where('product_id', $request->product_id)
+                        ->where('id', '!=', $id) // exclude current row
+                        ->whereNull('deleted_at')
+                        ->exists();
+
+                    Log::info('Update check duplicate', [
+                        'exists' => $exists,
+                        'product_id' => $request->product_id,
+                        'ignore_id' => $id,
+                    ]);
+
+                    if ($exists) {
+                        $fail("The $attribute has already been taken for this product.");
+                    }
+                },
+            ],
             'product_id' => 'required|exists:product,id',
         ]);
 
@@ -64,6 +106,7 @@ class ProductTypeController extends Controller
 
         return response()->json($type);
     }
+
 
     // Soft delete product type
     public function destroy($id)

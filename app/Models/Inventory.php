@@ -13,15 +13,18 @@ class Inventory extends Model
 
     protected $fillable = [
         'product_id',
-        'serial_no',
+        'product_type_id',
         'firmware_version',
-        'tested_status',
-        'tested_by',
         'tested_date',
+        'serial_no',
+        'tested_by',
+        'tested_status',
         'test_remarks',
+        'from_serial',
+        'to_serial',
+        'quantity',
         'created_by',
-        'updated_by',
-        'deleted_by'
+        'updated_by'
     ];
 
     protected $casts = [
@@ -36,6 +39,11 @@ class Inventory extends Model
     {
         return $this->belongsTo(Product::class);
     }
+
+public function productType()
+{
+    return $this->belongsTo(ProductType::class, 'product_type_id');
+}
 
     public function tester()
     {

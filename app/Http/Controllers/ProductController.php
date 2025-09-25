@@ -6,18 +6,17 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\Product;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rule;
 
 class ProductController extends Controller
 {
-    // Get all products (with their types if needed)
     public function index()
     {
-        // If you want product_types included:
         return Product::whereNull('deleted_at')
                       ->with('productTypes') // because Product hasMany ProductType
                       ->get();
         
-        // If you want products only, remove ->with('productTypes')
     }
 
     public function show($id)
@@ -36,37 +35,60 @@ class ProductController extends Controller
 
     // Create new product
     public function store(Request $request)
-    {
-        $validated = $request->validate([
-            'name' => 'required|unique:product,name',
-        ]);
+{
+    $validated = $request->validate([
+        'name' => [
+            'required',
+            function ($attribute, $value, $fail) {
 
-        $validated['created_by'] = Auth::id() ?? 1;
+        
+                $exists = Product::where('name', $value)
+                    ->whereNull('deleted_at') 
+                    ->exists();
 
-        $product = Product::create($validated);
+                //      Log::info('is Exists', [
+                //     'exists' => $exists,
+                // ]);
 
-        return response()->json($product, 201);
+                if ($exists) {
+                    $fail("The $attribute has already been taken.");
+                }
+            },
+        ],
+    ]);
+
+    $validated['created_by'] = auth()->id() ?? 1;
+
+    $product = Product::create($validated);
+
+    return response()->json($product, 201);
+}
+
+  public function update(Request $request, $id)
+{
+    $product = Product::where('id', $id)->whereNull('deleted_at')->first();
+
+    if (!$product) {
+        return response()->json(['error' => 'Not found'], 404);
     }
 
-    // Update product
-    public function update(Request $request, $id)
-    {
-        $product = Product::where('id', $id)->whereNull('deleted_at')->first();
+    $validated = $request->validate([
+        'name' => [
+            'required',
+            Rule::unique('product', 'name')
+                ->ignore($id) // exclude current product
+                ->whereNull('deleted_at'), // respect soft delete
+        ],
+    ]);
 
-        if (!$product) {
-            return response()->json(['error' => 'Not found'], 404);
-        }
+    $validated['updated_by'] = Auth::id() ?? 1;
 
-        $validated = $request->validate([
-            'name' => 'required|unique:product,name,' . $id,
-        ]);
+    $product->update($validated);
 
-        $validated['updated_by'] = Auth::id() ?? 1;
+    return response()->json($product);
+}
 
-        $product->update($validated);
 
-        return response()->json($product);
-    }
 
     // Soft delete product
     public function destroy($id)

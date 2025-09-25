@@ -76,6 +76,7 @@ Route::put('/purchaseUpdate/{id}', [SparepartPurchaseController::class, 'update'
 
 Route::get('/inventory/serial-numbers', [InventoryController::class, 'serialNumbers']);
 Route::prefix('inventory')->group(function () {
+    Route::get('/show', [InventoryController::class, 'getAllItems']);
     Route::get('/', [InventoryController::class, 'index']);
     Route::get('/{id}', [InventoryController::class, 'show']);
     Route::post('/', [InventoryController::class, 'store']);
