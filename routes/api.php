@@ -73,6 +73,12 @@ Route::get('/sparepart-purchases', [SparepartPurchaseController::class, 'index']
 Route::get('{id}/purchase/edit', [SparepartPurchaseController::class, 'edit']);
 Route::put('/purchaseUpdate/{id}', [SparepartPurchaseController::class, 'update']);
 
+Route::get('/available-serials', [SparepartPurchaseController::class, 'availableSerials']);
+Route::delete('/sparepart-purchase-items/{id}', [SparepartPurchaseController::class, 'destroy']);
+// routes/api.php
+Route::get('/sparepart-purchases/view/{id}', [SparepartPurchaseController::class, 'show']);
+Route::post('/check-sparepart-serials', [SparepartPurchaseController::class, 'checkSerials']);
+
 
 Route::get('/inventory/serial-numbers', [InventoryController::class, 'serialNumbers']);
 Route::prefix('inventory')->group(function () {
