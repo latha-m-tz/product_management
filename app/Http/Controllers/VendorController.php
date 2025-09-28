@@ -212,10 +212,17 @@ class VendorController extends Controller
 
     public function VendorList()
     {
+        // $vendors = DB::table('vendors')
+        //     ->select('id', 'vendor', 'gst_no', 'email', 'mobile_no', 'status', 'created_at')
+        //     ->orderBy('created_at', 'desc')
+        //     ->get();
+
         $vendors = DB::table('vendors')
-            ->select('id', 'vendor', 'gst_no', 'email', 'mobile_no', 'status', 'created_at')
-            ->orderBy('created_at', 'desc')
-            ->get();
+    ->select('id', 'vendor', 'gst_no', 'email', 'mobile_no', 'status', 'created_at')
+    ->whereNull('deleted_at') // ignore soft-deleted vendors
+    ->orderBy('created_at', 'desc')
+    ->get();
+
 
         return response()->json($vendors);
     }
@@ -255,4 +262,30 @@ class VendorController extends Controller
             ], 500);
         }
     }
+
+//    public function destroy($id)
+// {
+//     try {
+//         $vendor = Vendor::find($id);
+
+//         if (!$vendor) {
+//             return response()->json([
+//                 'error' => 'Vendor not found'
+//             ], 404);
+//         }
+
+//         $vendor->delete(); // permanently deletes since SoftDeletes not used
+
+//         return response()->json([
+//             'message' => 'Vendor deleted successfully'
+//         ], 200);
+
+//     } catch (\Exception $e) {
+//         return response()->json([
+//             'error' => $e->getMessage()
+//         ], 500);
+//     }
+// }
+
+
 }
