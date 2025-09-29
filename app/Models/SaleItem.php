@@ -8,14 +8,15 @@ use App\Models\Inventory;
 
 class SaleItem extends Model
 {
-    // use HasFactory;
+    
 
     protected $table = 'sale_items';
 
     protected $fillable = [
         'sale_id',
+        'product_id',
         'quantity',
-        'testing_id',
+        'serial_no',
         'created_at',
         'updated_at',
     ];
@@ -25,8 +26,12 @@ class SaleItem extends Model
         return $this->belongsTo(Sale::class, 'sale_id');
     }
 
-    public function testing()
+    public function inventory()
     {
-        return $this->belongsTo(Inventory::class, 'testing_id');
+        return $this->belongsTo(Inventory::class, 'serial_no', 'serial_no');
+    }
+    public function product()
+    {
+        return $this->belongsTo(Product::class, 'product_id');
     }
 }

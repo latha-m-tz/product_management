@@ -34,7 +34,6 @@ class Inventory extends Model
         'deleted_at' => 'datetime',
     ];
 
-    // Relationships
     public function product()
     {
         return $this->belongsTo(Product::class);
@@ -65,9 +64,9 @@ public function productType()
         return $this->belongsTo(User::class, 'deleted_by');
     }
 
-    public function saleItems()
+   public function saleItems()
     {
-        return $this->hasMany(SaleItem::class, 'testing_id');
+        return $this->hasMany(SaleItem::class, 'serial_no', 'serial_no');
     }
     public function serviceItems()
     {

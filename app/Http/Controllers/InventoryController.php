@@ -49,9 +49,9 @@ class InventoryController extends Controller
         }
 
         // Exclude sold items
-        $soldIds = SaleItem::pluck('testing_id')->toArray();
-        if (!empty($soldIds)) {
-            $query->whereNotIn('id', $soldIds);
+        $soldSerials = SaleItem::pluck('serial_no')->toArray();
+        if (!empty($soldSerials)) {
+            $query->whereNotIn('serial_no', $soldSerials);
         }
 
         $inventory = $query->paginate(10);
@@ -61,7 +61,16 @@ class InventoryController extends Controller
 
     public function SerialNumbers()
     {
-        $serials = Inventory::select('id', 'serial_no')->get();
+        $serials = Inventory::with('product:id,name')
+        ->select('id', 'serial_no','product_id')
+        ->get()
+        ->map(function ($item) {
+            return [
+                'id'         => $item->id,
+                'serial_no'  => $item->serial_no,
+                'product'    => $item->product ? $item->product->name : null,
+            ];
+        });
         return response()->json($serials);
     }
 

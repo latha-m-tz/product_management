@@ -15,15 +15,42 @@ class SalesController extends Controller
     {
         $sales = Sale::with([
             'customer:id,customer,email,mobile_no',
-            'items' => function ($query) {
-                $query->select('id', 'sale_id', 'testing_id', 'quantity');
-            },
-            'items.testing' => function ($query) {
-                $query->select('id', 'serial_no', 'tested_status');
-            }
+            'items:id,sale_id,serial_no,quantity,product_id',
+            'items.inventory:id,serial_no,tested_status',
+            'items.product:id,name'
         ])->get();
 
-        return response()->json($sales);
+        return response()->json($sales->map(function ($sale) {
+            return [
+                'id'            => $sale->id,
+                'customer'      => $sale->customer,
+                'challan_no'    => $sale->challan_no,
+                'challan_date'  => $sale->challan_date,
+                'shipment_date' => $sale->shipment_date,
+                'shipment_name' => $sale->shipment_name,
+                'notes'         => $sale->notes,
+                'created_at'    => $sale->created_at,
+                'updated_at'    => $sale->updated_at,
+                'items'         => $sale->items->map(function ($item) {
+                    return [
+                        'id'        => $item->id,
+                        'quantity'  => $item->quantity,
+                        'product_id' => $item->product_id,
+                        'serial_no' => $item->serial_no,
+                        'inventory' => $item->inventory ? [
+                            'serial_no'     => $item->inventory->serial_no,
+                            'tested_status' => $item->inventory->tested_status,
+                        ] : null,
+                        'product'   => $item->product ? $item->product->name : null,
+                    ];
+                }),
+                'unique_products' => $sale->items
+                ->map(fn($item) => $item->product ? $item->product->name : null)
+                ->filter()
+                ->unique()
+                ->values(),
+            ];
+        }));
     }
 
     public function customers()
@@ -33,13 +60,18 @@ class SalesController extends Controller
 
     public function getTestingData(Request $request)
     {
-        $query = Inventory::whereRaw('LOWER(TRIM(tested_status)) = ?', ['pass'])
-            ->whereNotIn('id', function ($q) {
-                $q->select('testing_id')->from('sale_items');
+        $query = Inventory::with(['product', 'tester'])
+            ->whereRaw('LOWER(TRIM(tested_status)) = ?', ['pass'])
+            ->whereNotIn('serial_no', function ($q) {
+                $q->select('serial_no')->from('sale_items');
             });
 
-        if ($request->filled('serial_from') && $request->filled('serial_to')) {
-            $query->whereBetween('serial_no', [$request->serial_from, $request->serial_to]);
+        if ($request->filled('serial_from')) {
+            $query->where('serial_no', '>=', trim($request->serial_from));
+        }
+
+        if ($request->filled('serial_to')) {
+            $query->where('serial_no', '<=', trim($request->serial_to));
         }
 
         return response()->json($query->get());
@@ -48,7 +80,7 @@ class SalesController extends Controller
     public function store(Request $request)
     {
         $request->validate([
-            'customer_id'   => 'required|integer',
+            'customer_id'   => 'required|integer|exists:customers,id',
             'challan_no'    => 'required|string|unique:sales,challan_no',
             'challan_date'  => 'required|date',
             'shipment_date' => 'required|date',
@@ -70,50 +102,74 @@ class SalesController extends Controller
             foreach ($request->items as $itemData) {
                 $serial = trim($itemData['serial_no']);
 
-                if (in_array($serial, $addedSerials)) {
-                    continue;
-                }
+                if (in_array($serial, $addedSerials)) continue;
+                // $serial = trim($itemData['serial_no']);
+                $inventory = Inventory::whereRaw('LOWER(TRIM(serial_no)) = ?', [strtolower($serial)])
+                    ->whereRaw('LOWER(TRIM(tested_status)) = ?', ['pass'])
+                    ->whereNotIn('serial_no', function ($q) {
+                        $q->select('serial_no')->from('sale_items');
+                    })
+                    ->first();
 
-                $testing = Inventory::where('serial_no', $serial)
-                                    ->whereRaw('LOWER(TRIM(tested_status)) = ?', ['pass'])
-                                    ->whereNotIn('id', function ($q) {
-                                        $q->select('testing_id')->from('sale_items');
-                                    })
-                                    ->first();
-
-                if (!$testing) {
+                if (!$inventory) {
                     throw new \Exception("Serial {$serial} is not PASS, not found, or already assigned");
                 }
 
                 $sale->items()->create([
-                    'quantity'   => $itemData['quantity'],
-                    'testing_id' => $testing->id,
+                    'quantity'  => $itemData['quantity'],
+                    'serial_no' => $serial,
+                    'product_id' => $inventory->product_id ?? null,
                 ]);
 
                 $addedSerials[] = $serial;
             }
 
-            return response()->json($sale->load('items.testing'), 201);
-        }, 5); 
+            return response()->json($sale->load('items.inventory'), 201);
+        }, 5);
     }
 
     public function show($id)
     {
         $sale = Sale::with([
             'customer:id,customer,email,mobile_no',
-            'items' => function ($query) {
-                $query->select('id', 'sale_id', 'testing_id', 'quantity');
-            },
-            'items.testing' => function ($query) {
-                $query->select('id', 'serial_no', 'tested_status');
-            }
+            'items:id,sale_id,serial_no,quantity,product_id',
+            'items.inventory:id,serial_no,tested_status',
+            'items.product:id,name'
         ])->find($id);
 
         if (!$sale) {
             return response()->json(['message' => 'Sale not found'], 404);
         }
 
-        return response()->json($sale);
+        return response()->json([
+            'id'            => $sale->id,
+            'customer'      => $sale->customer,
+            'challan_no'    => $sale->challan_no,
+            'challan_date'  => $sale->challan_date,
+            'shipment_date' => $sale->shipment_date,
+            'shipment_name' => $sale->shipment_name,
+            'notes'         => $sale->notes,
+            'created_at'    => $sale->created_at,
+            'updated_at'    => $sale->updated_at,
+            'items'         => $sale->items->map(function ($item) {
+                return [
+                    'id'        => $item->id,
+                    'quantity'  => $item->quantity,
+                    'product_id' => $item->product_id,
+                    'serial_no' => $item->serial_no,
+                    'inventory' => $item->inventory ? [
+                        'serial_no'     => $item->inventory->serial_no,
+                        'tested_status' => $item->inventory->tested_status,
+                    ] : null,
+                    'product'   => $item->product ? $item->product->name : null,
+                ];
+            }),
+            'unique_products' => $sale->items
+            ->map(fn($item) => $item->product ? $item->product->name : null)
+            ->filter()
+            ->unique()
+            ->values(),
+        ]);
     }
 
     public function update(Request $request, $id)
@@ -124,7 +180,7 @@ class SalesController extends Controller
         }
 
         $request->validate([
-            'customer_id'   => 'sometimes|integer',
+            'customer_id'   => 'sometimes|integer|exists:customers,id',
             'challan_no'    => 'sometimes|string|unique:sales,challan_no,' . $id,
             'challan_date'  => 'sometimes|date',
             'shipment_date' => 'sometimes|date',
@@ -146,30 +202,23 @@ class SalesController extends Controller
                 $existingIds = collect($request->items)->pluck('id')->filter();
                 $sale->items()->whereNotIn('id', $existingIds)->delete();
 
-                $addedSerials = $sale->items()
-                    ->with('testing')
-                    ->get()
-                    ->pluck('testing.serial_no')
-                    ->map(fn($s) => trim($s))
-                    ->toArray();
+                $addedSerials = $sale->items()->pluck('serial_no')->map(fn($s) => trim($s))->toArray();
 
                 foreach ($request->items as $itemData) {
                     $serial = trim($itemData['serial_no']);
 
-                    if (in_array($serial, $addedSerials)) {
-                        continue;
-                    }
+                    if (in_array($serial, $addedSerials)) continue;
 
-                    $testing = Inventory::where('serial_no', $serial)
-                                        ->whereRaw('LOWER(TRIM(tested_status)) = ?', ['pass'])
-                                        ->whereNotIn('id', function ($q) use ($sale) {
-                                            $q->select('testing_id')
-                                              ->from('sale_items')
-                                              ->where('sale_id', '!=', $sale->id);
-                                        })
-                                        ->first();
+                    $inventory = Inventory::where('serial_no', $serial)
+                        ->whereRaw('LOWER(TRIM(tested_status)) = ?', ['pass'])
+                        ->whereNotIn('serial_no', function ($q) use ($sale) {
+                            $q->select('serial_no')
+                                ->from('sale_items')
+                                ->where('sale_id', '!=', $sale->id);
+                        })
+                        ->first();
 
-                    if (!$testing) {
+                    if (!$inventory) {
                         throw new \Exception("Serial {$serial} is not PASS, not found, or already assigned");
                     }
 
@@ -177,14 +226,16 @@ class SalesController extends Controller
                         $item = SaleItem::find($itemData['id']);
                         if ($item) {
                             $item->update([
-                                'quantity'   => $itemData['quantity'],
-                                'testing_id' => $testing->id,
+                                'quantity'  => $itemData['quantity'],
+                                'serial_no' => $serial,
+                                'product_id' => $inventory->product_id ?? null,
                             ]);
                         }
                     } else {
                         $sale->items()->create([
-                            'quantity'   => $itemData['quantity'],
-                            'testing_id' => $testing->id,
+                            'quantity'  => $itemData['quantity'],
+                            'serial_no' => $serial,
+                            'product_id' => $inventory->product_id ?? null,
                         ]);
                     }
 
@@ -192,7 +243,7 @@ class SalesController extends Controller
                 }
             }
 
-            return response()->json($sale->load('items.testing'));
+            return response()->json($sale->load('items.inventory'));
         }, 5);
     }
 
