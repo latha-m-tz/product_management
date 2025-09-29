@@ -82,6 +82,9 @@ Route::delete('/sparepart-purchase-items/{id}', [SparepartPurchaseController::cl
 // routes/api.php
 Route::get('/sparepart-purchases/view/{id}', [SparepartPurchaseController::class, 'show']);
 Route::post('/check-sparepart-serials', [SparepartPurchaseController::class, 'checkSerials']);
+Route::get('/get-purchase', [SparepartPurchaseController::class, 'view']);
+
+Route::get('/vci-capacity', [SparepartPurchaseController::class, 'components']);
 
 
 Route::get('/inventory/serial-numbers', [InventoryController::class, 'serialNumbers']);
