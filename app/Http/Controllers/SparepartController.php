@@ -5,6 +5,7 @@ use Illuminate\Http\Request;
 use App\Models\Sparepart;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rule;
 
 class SparepartController extends Controller
 {
@@ -12,7 +13,16 @@ class SparepartController extends Controller
     {
 
         $validated = $request->validate([
-            'name'           => 'required|string|max:255',
+    'name' => [
+        'required',
+        'string',
+        'max:255',
+        function ($attribute, $value, $fail) {
+            if (Sparepart::whereRaw('LOWER(name) = ?', [strtolower($value)])->exists()) {
+                $fail('The '.$attribute.' has already been taken.');
+            }
+        },
+    ],
             'sparepart_type' => 'required|string|max:255',
         ]);
 

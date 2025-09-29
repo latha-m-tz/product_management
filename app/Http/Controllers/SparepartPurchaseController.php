@@ -126,8 +126,8 @@ public function store(Request $request)
 {
     $request->validate([
         'vendor_id' => 'required|integer|exists:vendors,id',
-        'challan_no' => 'required|string|max:50',
-        'challan_date' => 'required|date',
+         'challan_no' => 'required|string|max:50|unique:sparepart_purchase,challan_no',
+    'challan_date' => 'required|date|before_or_equal:today',
         'items' => 'required|array|min:1',
         'items.*.product_id' => 'nullable|integer|exists:product,id',
         'items.*.sparepart_id' => 'required|integer|exists:spareparts,id',
@@ -467,8 +467,10 @@ public function update(Request $request, $id)
 {
     $request->validate([
         'vendor_id' => 'required|integer|exists:vendors,id',
-        'challan_no' => 'required|string|max:50',
-        'challan_date' => 'required|date',
+        // 'challan_no' => 'required|string|max:50',
+        // 'challan_date' => 'required|date',
+     'challan_no' => 'required|string|max:50|unique:sparepart_purchase,challan_no',
+    'challan_date' => 'required|date|before_or_equal:today',
         'items' => 'required|array|min:1',
         'items.*.id' => 'nullable|integer|exists:sparepart_purchase_items,id',
         'items.*.product_id' => 'nullable|integer|exists:product,id',
@@ -620,14 +622,16 @@ public function update(Request $request, $id)
 
 public function destroy($id)
 {
-    $item = SparepartPurchaseItem::findOrFail($id);
-    
-    $item->delete();
+    DB::transaction(function () use ($id) {
+        SparepartPurchaseItem::where('purchase_id', $id)->delete();
+        SparepartPurchase::findOrFail($id)->delete();
+    });
 
     return response()->json([
-        'message' => 'Sparepart purchase item deleted successfully'
+        'message' => 'Purchase and its items deleted successfully'
     ]);
 }
+
 
 
 
@@ -762,7 +766,8 @@ public function availableSerials(Request $request)
 }
    public function show($id)
 {
-    $purchase = SparepartPurchase::with(['vendor', 'items.product'])->find($id);
+ $purchase = SparepartPurchase::with(['vendor', 'items.product', 'items.sparepart'])->find($id);
+
 
     if (!$purchase) {
         return response()->json([
@@ -777,18 +782,126 @@ public function availableSerials(Request $request)
         'challan_no' => $purchase->challan_no,
         'challan_date' => $purchase->challan_date,
         'total_quantity' => $totalQuantity,
-        'items' => $purchase->items->map(function ($item) {
-            return [
-                'id' => $item->id,
-                'product' => $item->product->name ?? null,
-                'serial_numbers' => $item->serial_no ? explode(',', $item->serial_no) : [],
-                'quantity' => $item->quantity
-            ];
-        }),
+'items' => $purchase->items->map(function ($item) {
+    return [
+        'id' => $item->id,
+        'product' => $item->product->name ?? null,        // product name
+        'sparepart' => $item->sparepart->name ?? null,    // sparepart name
+        'serial_numbers' => $item->serial_no 
+            ? explode(',', $item->serial_no) 
+            : [],
+        'quantity' => $item->quantity,
+    ];
+}),
+
     ];
 
     return response()->json($response);
 }
+
+
+public function view()
+{
+    // Get latest 10 purchases with vendor + items + sparepart
+    $purchases = SparepartPurchase::with(['vendor', 'items.sparepart'])
+        ->orderBy('challan_date', 'desc')
+        ->take(10)
+        ->get();
+
+    // Flatten the purchases into rows (vendor, challan, product, quantity)
+    $response = [];
+
+    foreach ($purchases as $purchase) {
+        foreach ($purchase->items as $item) {
+            $response[] = [
+                'id' => $purchase->id,
+                'vendor' => $purchase->vendor->vendor ?? null,
+                'challan_date' => $purchase->challan_date,
+                'product' => $item->sparepart->name ?? null,
+                'quantity' => $item->quantity,
+            ];
+        }
+    }
+
+    return response()->json($response);
+}
+
+  public function components()
+{
+    // Aggregate quantities of spareparts
+    $parts = DB::table('sparepart_purchase_items as spi')
+        ->join('spareparts as sp', 'spi.sparepart_id', '=', 'sp.id')
+        ->select(
+            'sp.id',
+            'sp.name',
+            DB::raw('SUM(spi.quantity) as total_quantity')
+        )
+        ->groupBy('sp.id', 'sp.name')
+        ->get();
+
+    if ($parts->isEmpty()) {
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'spare_parts' => [],
+                'available_vci_boards_possible' => 0,
+                'max_vci_boards_possible' => 0
+            ]
+        ]);
+    }
+
+    // ✅ Requirement per VCI
+    $requirements = [
+        'PCB BOARD'     => 1,
+        'BOLT'          => 4,
+        'Screw'         => 4,
+        'End Plate'     => 1,
+        'Rubber Case'   => 1,
+        'Nut'           => 4,
+        'White Panel'   => 2,
+        'OBD Connector' => 1,
+        'Red Rubber'    => 1,
+        'Mahle Sticker' => 1,
+        'Side Sticker'  => 2,
+    ];
+
+    $spareParts = [];
+    $boardsPossibleArr = [];
+
+    foreach ($parts as $p) {
+        $requiredQty = $requirements[$p->name] ?? 1; // default 1
+        $boards_possible = intdiv($p->total_quantity, $requiredQty);
+
+        $boardsPossibleArr[] = $boards_possible;
+
+        $spareParts[] = [
+            'id' => $p->id,
+            'name' => $p->name,
+            'total_quantity' => (int)$p->total_quantity,
+            'required_per_vci' => $requiredQty,
+            'boards_possible' => $boards_possible,
+            'status' => $boards_possible > 0 ? 'Available' : 'Unavailable'
+        ];
+    }
+
+    // 🔹 Max boards possible = bottleneck part
+    $maxBoards = min($boardsPossibleArr);
+
+    // 🔹 Available boards possible (ignoring unavailable parts)
+    $availableBoards = collect($spareParts)
+        ->where('boards_possible', '>', 0)
+        ->min('boards_possible') ?? 0;
+
+    return response()->json([
+        'success' => true,
+        'data' => [
+            'spare_parts' => $spareParts,
+            'available_vci_boards_possible' => $availableBoards,
+            'max_vci_boards_possible' => $maxBoards
+        ]
+    ]);
+}
+
 
 
 

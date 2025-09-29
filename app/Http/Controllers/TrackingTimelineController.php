@@ -12,28 +12,37 @@ class TrackingTimelineController extends Controller
 {
     public function show($serial_number)
     {
-        // Spare parts
+
         $spareParts = SparepartPurchaseItem::with([
-            'product',
-            'productType',
-            'purchase.vendor'
-        ])->where('serial_no', $serial_number)
-          ->get()
-          ->map(function ($item) {
-              return [
-                  'id' => $item->id,
-                  'serial_no' => $item->serial_no,
-                  'quantity' => $item->quantity,
-                  'warranty_status' => $item->warranty_status,
-                  'product_name' => $item->product?->name,
-                  'product_type' => $item->productType?->name,
-                  'challan_no' => $item->purchase?->challan_no,
-                  'challan_date' => $item->purchase?->challan_date,
-                  'vendor_name' => $item->purchase?->vendor?->name,
-                  'created_at' => $item->created_at,
-                  'updated_at' => $item->updated_at,
-              ];
-          });
+        'product',
+        'productType',
+        'purchase' 
+    ])
+    ->leftJoin('sparepart_purchase as sp', 'sparepart_purchase_items.purchase_id', '=', 'sp.id')
+    ->leftJoin('vendors as v', 'sp.vendor_id', '=', 'v.id')
+    ->where('sparepart_purchase_items.serial_no', $serial_number)
+    ->select(
+        'sparepart_purchase_items.*',
+        'v.vendor as vendor_name',
+        'sp.challan_no',
+        'sp.challan_date'
+    )
+    ->get()
+    ->map(function ($item) {
+        return [
+            'id' => $item->id,
+            'serial_no' => $item->serial_no,
+            'quantity' => $item->quantity,
+            'warranty_status' => $item->warranty_status,
+            'product_name' => $item->product?->name,
+            'product_type' => $item->productType?->name,
+            'challan_no' => $item->challan_no,
+            'challan_date' => $item->challan_date,
+            'vendor_name' => $item->vendor_name, 
+            'created_at' => $item->created_at,
+            'updated_at' => $item->updated_at,
+        ];
+    });
 
         // Inventory
         $inventory = Inventory::with(['product', 'productType'])

@@ -44,4 +44,10 @@ class SparepartPurchaseItem extends Model
     return $this->belongsTo(Product::class, 'product_id'); // matches your products table/model
 }
 
+// Product Type relation (if separate table)
+public function productType()
+{
+    return $this->belongsTo(ProductType::class, 'product_type_id');
+}
+
 }
