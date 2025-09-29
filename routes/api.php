@@ -13,6 +13,7 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\SalesController;
 use App\Http\Controllers\ServiceVCIManagementController;
 use App\Http\Controllers\BarcodeController;
+use App\Http\Controllers\TrackingTimelineController;
 
 // Route::get('/user', function (Request $request) {
 //     return $request->user();
@@ -25,6 +26,9 @@ Route::middleware('auth:api')->get('/user', function (Request $request) {
 
 
 
+Route::post('/login', [AuthController::class, 'login']);
+Route::post('/register', [AuthController::class, 'register']);
+Route::post('/logout', [AuthController::class, 'logout'])->middleware('auth:api');
 
 Route::prefix('product-types')->group(function () {
     Route::get('/', [ProductTypeController::class, 'index']);
@@ -83,6 +87,10 @@ Route::post('/check-sparepart-serials', [SparepartPurchaseController::class, 'ch
 Route::get('/inventory/serial-numbers', [InventoryController::class, 'serialNumbers']);
 Route::prefix('inventory')->group(function () {
     Route::get('/show', [InventoryController::class, 'getAllItems']);
+       Route::get('/serialrange/{from_serial}/{to_serial}', [InventoryController::class, 'serialrangeItems']);
+Route::put('/serialrange/{from_serial}/{to_serial}', [InventoryController::class, 'updateSerialRange']);
+    Route::get('/serialranges', [InventoryController::class, 'serialRanges']);
+Route::delete('/serialrange/{from_serial}/{to_serial}', [InventoryController::class, 'deleteSerialRange']);
     Route::get('/', [InventoryController::class, 'index']);
     Route::get('/{id}', [InventoryController::class, 'show']);
     Route::post('/', [InventoryController::class, 'store']);
@@ -107,3 +115,5 @@ Route::get('/service-vci/{id}', [ServiceVCIManagementController::class, 'show'])
 Route::put('/service-vci/{id}', [ServiceVCIManagementController::class, 'update']);
 Route::delete('/service-vci/{id}', [ServiceVCIManagementController::class, 'destroy']);
 Route::get('/barcode/{barcode}', [BarcodeController::class, 'getProductInfo']);
+
+Route::get('/tracking-timeline/{serial_number}', [TrackingTimelineController::class, 'show']);
