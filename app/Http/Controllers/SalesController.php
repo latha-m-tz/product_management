@@ -58,6 +58,13 @@ class SalesController extends Controller
         return response()->json(Customer::all());
     }
 
+    public function addedSerials()
+    {
+        $serials = SaleItem::pluck('serial_no')->map(fn($s) => trim($s));
+
+        return response()->json($serials);
+    }
+
     public function getTestingData(Request $request)
     {
         $query = Inventory::with(['product', 'tester'])

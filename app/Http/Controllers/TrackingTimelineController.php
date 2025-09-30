@@ -78,10 +78,53 @@ class TrackingTimelineController extends Controller
                 ];
             });
 
+       $sale = Sale::with([
+            'customer:id,customer,email,mobile_no',
+            'items:id,sale_id,serial_no,quantity,product_id',
+            'items.inventory:id,serial_no,tested_status,product_id',
+            'items.product:id,name'
+        ])->whereHas('items', function ($query) use ($serial_number) {
+            $query->where('serial_no', $serial_number);
+        })->first();
+
+        if ($sale) {
+            $saleDetails = [
+                'id'            => $sale->id,
+                'customer'      => $sale->customer,
+                'challan_no'    => $sale->challan_no,
+                'challan_date'  => $sale->challan_date,
+                'shipment_date' => $sale->shipment_date,
+                'shipment_name' => $sale->shipment_name,
+                'notes'         => $sale->notes,
+                'created_at'    => $sale->created_at,
+                'updated_at'    => $sale->updated_at,
+                'items'         => $sale->items->map(function ($item) {
+                    return [
+                        'id'        => $item->id,
+                        'serial_no' => $item->serial_no,
+                        'quantity'  => $item->quantity,
+                        'product'   => $item->product?->name,
+                        'inventory' => $item->inventory ? [
+                            'serial_no'     => $item->inventory->serial_no,
+                            'tested_status' => $item->inventory->tested_status,
+                        ] : null,
+                    ];
+                }),
+                'unique_products' => $sale->items
+                    ->map(fn($item) => $item->product?->name)
+                    ->filter()
+                    ->unique()
+                    ->values(),
+            ];
+        } else {
+            $saleDetails = null;
+        }
+
         return response()->json([
             'spare_parts' => $spareParts,
-            'inventory' => $inventory,
+            'inventory'   => $inventory,
             'service_vci' => $serviceVCI,
+            'sale'        => $saleDetails,
         ]);
     }
 
