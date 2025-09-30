@@ -109,7 +109,7 @@ Route::get('/sales/{id}', [SalesController::class, 'show']);
 Route::put('/sales/{id}', [SalesController::class, 'update']);   
 Route::delete('/sales/{id}', [SalesController::class, 'destroy']);
 Route::get('/testings', [SalesController::class, 'getTestingData']);
-
+Route::get('/added-serials', [SalesController::class, 'addedSerials']);
 
 //service
 Route::get('/service-vci', [ServiceVCIManagementController::class, 'index']);

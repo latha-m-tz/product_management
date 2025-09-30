@@ -3,7 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\VCIService;
-use App\Models\VCIServiceItem;
+use App\Models\VCIServiceItems;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 
@@ -42,10 +42,18 @@ class ServiceVCIManagementController extends Controller
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        $serviceVCI = VCIService::create($request->only([
-            'challan_no', 'challan_date', 'courier_name', 'hsn_code', 'quantity',
-            'status', 'sent_date', 'received_date', 'from_place', 'to_place'
-        ]));
+        $serviceVCI = VCIService::create([
+            'challan_no'    => $request->challan_no,
+            'challan_date'  => $request->challan_date,
+            'courier_name'  => $request->courier_name,
+            'hsn_code'      => $request->hsn_code,
+            'quantity'      => $request->quantity,
+            'status'        => $request->status ?? 'active', // default
+            'sent_date'     => $request->sent_date,
+            'received_date' => $request->received_date,
+            'from_place'    => $request->from_place,
+            'to_place'      => $request->to_place,
+        ]);
 
         foreach ($request->items as $itemData) {
             $serviceVCI->items()->create([
@@ -104,14 +112,22 @@ class ServiceVCIManagementController extends Controller
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        $serviceVCI->update($request->only([
-            'challan_no', 'challan_date', 'courier_name', 'hsn_code', 'quantity',
-            'status', 'sent_date', 'received_date', 'from_place', 'to_place'
-        ]));
+        $serviceVCI->update([
+            'challan_no'    => $request->challan_no ?? $serviceVCI->challan_no,
+            'challan_date'  => $request->challan_date ?? $serviceVCI->challan_date,
+            'courier_name'  => $request->courier_name ?? $serviceVCI->courier_name,
+            'hsn_code'      => $request->hsn_code ?? $serviceVCI->hsn_code,
+            'quantity'      => $request->quantity ?? $serviceVCI->quantity,
+            'status'        => $request->status ?? $serviceVCI->status ?? 'active', // default
+            'sent_date'     => $request->sent_date ?? $serviceVCI->sent_date,
+            'received_date' => $request->received_date ?? $serviceVCI->received_date,
+            'from_place'    => $request->from_place ?? $serviceVCI->from_place,
+            'to_place'      => $request->to_place ?? $serviceVCI->to_place,
+        ]);
 
         if ($request->has('items')) {
             foreach ($request->items as $itemData) {
-                $item = VCIServiceItem::find($itemData['id']);
+                $item = VCIServiceItems::find($itemData['id']);
                 if ($item && $item->service_vci_id == $serviceVCI->id) {
                     $item->update([
                         'vci_serial_no' => $itemData['vci_serial_no'],
