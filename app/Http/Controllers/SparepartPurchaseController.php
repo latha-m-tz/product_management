@@ -122,6 +122,7 @@ class SparepartPurchaseController extends Controller
 //         'items' => $allItems,
 //     ], 201);
 // }
+
 public function store(Request $request)
 {
     $request->validate([
@@ -130,7 +131,7 @@ public function store(Request $request)
     'challan_date' => 'required|date|before_or_equal:today',
         'items' => 'required|array|min:1',
         'items.*.product_id' => 'nullable|integer|exists:product,id',
-        'items.*.sparepart_id' => 'required|integer|exists:spareparts,id',
+        'items.*.sparepart_id' => 'nullable|integer|exists:spareparts,id',
         'items.*.quantity' => 'required|integer|min:1',
         'items.*.warranty_status' => 'nullable|string|max:50',
         'items.*.serial_no' => 'nullable|string|max:100',
@@ -323,7 +324,7 @@ public function index(Request $request)
         'c.name as product_name',
         's.id as sparepart_id',
         's.name as sparepart_name',
-        DB::raw('SUM(pi.quantity) OVER (PARTITION BY p.id) as total_quantity') // ✅ aggregate
+        DB::raw('SUM(pi.quantity) OVER (PARTITION BY p.id) as total_quantity') 
     )
     ->orderBy('p.id', 'desc');
 
@@ -463,18 +464,20 @@ public function edit($id)
 //     'items' => $allItems,
 // ], 200);
 // }
+
+
 public function update(Request $request, $id)
 {
     $request->validate([
         'vendor_id' => 'required|integer|exists:vendors,id',
-        // 'challan_no' => 'required|string|max:50',
-        // 'challan_date' => 'required|date',
-     'challan_no' => 'required|string|max:50|unique:sparepart_purchase,challan_no',
-    'challan_date' => 'required|date|before_or_equal:today',
-        'items' => 'required|array|min:1',
-        'items.*.id' => 'nullable|integer|exists:sparepart_purchase_items,id',
+        'challan_no' => 'required|string|max:50',
+        'challan_date' => 'required|date|before_or_equal:today',
+        'items' => 'nullable|array|min:1',
+        // 'items.*.id' => 'nullable|integer|exists:sparepart_purchase_items,id',
+        'items.*.id' => 'nullable|integer', // remove exists
+
         'items.*.product_id' => 'nullable|integer|exists:product,id',
-        'items.*.sparepart_id' => 'required|integer|exists:spareparts,id',
+        'items.*.sparepart_id' => 'nullable|integer|exists:spareparts,id',
         'items.*.quantity' => 'required|integer|min:1',
         'items.*.warranty_status' => 'nullable|string|max:50',
         'items.*.serials' => 'nullable|array',
@@ -488,6 +491,10 @@ public function update(Request $request, $id)
         'challan_no' => $request->challan_no,
         'challan_date' => $request->challan_date,
     ]);
+
+       if (!empty($request->deleted_sparepart_ids)) {
+        SparepartPurchaseItem::whereIn('id', $request->deleted_sparepart_ids)->delete();
+    }
 
     $totalQuantity = 0;
 
@@ -901,6 +908,7 @@ public function view()
         ]
     ]);
 }
+
 
 
 
