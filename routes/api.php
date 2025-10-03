@@ -120,3 +120,4 @@ Route::delete('/service-vci/{id}', [ServiceVCIManagementController::class, 'dest
 Route::get('/barcode/{barcode}', [BarcodeController::class, 'getProductInfo']);
 
 Route::get('/tracking-timeline/{serial_number}', [TrackingTimelineController::class, 'show']);
+Route::delete('/purchase-items/{purchase_id}/{sparepart_id}', [SparepartController::class, 'deleteItem']);

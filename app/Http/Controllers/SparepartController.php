@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\Sparepart;
+use App\Models\SparepartPurchaseItem;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
@@ -99,6 +100,22 @@ public function update(Request $request, $id)
             'spareparts' => $spareparts
         ], 200);
     }
+
+public function deleteItem($purchase_id, $sparepart_id)
+{
+    // Delete all items in this purchase with this sparepart
+    $deleted = SparepartPurchaseItem::where('purchase_id', $purchase_id)
+        ->where('sparepart_id', $sparepart_id)
+        ->delete(); // deletes all matched rows
+
+    if ($deleted === 0) {
+        return response()->json(['message' => 'No items found'], 404);
+    }
+
+    return response()->json(['message' => 'Sparepart row deleted successfully']);
+}
+
+
 
 }
 
