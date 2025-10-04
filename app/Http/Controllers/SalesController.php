@@ -73,12 +73,16 @@ class SalesController extends Controller
                 $q->select('serial_no')->from('sale_items');
             });
 
+        if ($request->filled('product_id')) {
+            $query->where('inventories.product_id', $request->product_id);
+        }
+
         if ($request->filled('serial_from')) {
-            $query->where('serial_no', '>=', trim($request->serial_from));
+            $query->where('inventories.serial_no', '>=', trim($request->serial_from));
         }
 
         if ($request->filled('serial_to')) {
-            $query->where('serial_no', '<=', trim($request->serial_to));
+            $query->where('inventories.serial_no', '<=', trim($request->serial_to));
         }
 
         return response()->json($query->get());
@@ -266,4 +270,25 @@ class SalesController extends Controller
 
         return response()->json(['message' => 'Sale and its items deleted successfully']);
     }
+
+    public function getSaleSerials($productId)
+    {
+        $serials = \DB::table('sale_items')
+            ->where('product_id', $productId)
+            ->select('id', 'serial_no')
+            ->get();
+
+        return response()->json($serials);
+    }
+
+    public function getProductSerials($productId)
+    {
+        $serials = \DB::table('inventory')
+        ->where('product_id', $productId)
+        ->select ('id', 'serial_no','product_id')
+        ->get();
+        return response()->json($serials);
+    }
+
+
 }

@@ -20,49 +20,56 @@ class InventoryController extends Controller
     }
 
     public function index(Request $request)
-    {
-        $query = Inventory::with(['product', 'tester', 'productType']);
+{
+    $query = Inventory::with(['product', 'tester', 'productType']);
 
-        // Filter by serial number range
-        if ($request->filled('serial_from')) {
-            $query->where('serial_no', '>=', $request->serial_from);
-        }
-        if ($request->filled('serial_to')) {
-            $query->where('serial_no', '<=', $request->serial_to);
-        }
-
-        // Filter by tested status
-        if ($request->filled('tested_status')) {
-            $query->where('tested_status', $request->tested_status);
-        }
-
-        // Filter by product
-        if ($request->filled('product_id')) {
-            $query->where('product_id', $request->product_id);
-        }
-
-        // Filter by product type
-        if ($request->filled('product_type_id')) {
-            $query->whereHas('productType', function ($q) use ($request) {
-                $q->where('id', $request->product_type_id);
-            });
-        }
-
-        // Exclude sold items
-        $soldSerials = SaleItem::pluck('serial_no')->toArray();
-        if (!empty($soldSerials)) {
-            $query->whereNotIn('serial_no', $soldSerials);
-        }
-
-        $inventory = $query->paginate(10);
-
-        return response()->json($inventory);
+    // Serial range filter
+    if ($request->filled('serial_from')) {
+        $query->where('serial_no', '>=', $request->serial_from);
     }
+    if ($request->filled('serial_to')) {
+        $query->where('serial_no', '<=', $request->serial_to);
+    }
+
+    // Tested status
+    if ($request->filled('tested_status')) {
+        $query->where('tested_status', $request->tested_status);
+    } else {
+        $query->where('tested_status', 'PASS');
+    }
+
+    // Product filter
+    if ($request->filled('product_id')) {
+        $query->where('product_id', $request->product_id);
+    }
+
+    // Product type filter
+    if ($request->filled('product_type_id')) {
+        $query->whereHas('productType', function ($q) use ($request) {
+            $q->where('id', $request->product_type_id);
+        });
+    }
+
+    // Exclude sold items
+    $soldSerials = SaleItem::pluck('serial_no')->toArray();
+    if (!empty($soldSerials)) {
+        $query->whereNotIn('serial_no', $soldSerials);
+    }
+
+    $inventory = $query->paginate(10);
+
+    return response()->json($inventory);
+}
+
 
     public function SerialNumbers()
     {
+        $soldSerials = SaleItem::pluck('serial_no')->toArray();
+        
         $serials = Inventory::with('product:id,name')
-        ->select('id', 'serial_no','product_id')
+        ->select('id', 'serial_no','product_id','tested_status')
+        ->where('tested_status', 'PASS')
+        ->whereNotIn('serial_no', $soldSerials)
         ->get()
         ->map(function ($item) {
             return [
@@ -372,4 +379,3 @@ public function deleteSerialRange(Request $request, $from_serial, $to_serial)
 
 
 }
-
