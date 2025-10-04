@@ -121,3 +121,6 @@ Route::get('/barcode/{barcode}', [BarcodeController::class, 'getProductInfo']);
 
 Route::get('/tracking-timeline/{serial_number}', [TrackingTimelineController::class, 'show']);
 Route::delete('/purchase-items/{purchase_id}/{sparepart_id}', [SparepartController::class, 'deleteItem']);
+Route::get('/sales/serials/{productId}', [SalesController::class, 'getSaleSerials']);
+Route::get('/products/{productId}/serials', [SalesController::class, 'getProductSerials']);
+Route::get('service-vci/added-serials', [ServiceVCIManagementController::class, 'getAllVCISerialNumbers']);

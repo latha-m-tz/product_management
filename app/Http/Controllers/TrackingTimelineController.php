@@ -7,6 +7,7 @@ use App\Models\sparepartPurchaseItem;
 use App\Models\Inventory;
 use App\Models\Sale;
 use App\Models\VCIServiceItems;
+use App\Models\VCIService;
 
 class TrackingTimelineController extends Controller
 {
@@ -68,11 +69,11 @@ class TrackingTimelineController extends Controller
             ->map(function ($item) {
                 return [
                     'id' => $item->id,
-                    'challan_no' => $item->challan_no,
-                    'challan_date' => $item->challan_date,
-                    'status' => $item->status,
+                    'challan_no' => $item->serviceVCI?->challan_no,
+                    'challan_date' => $item->serviceVCI?->challan_date,
+                    'status' => $item->serviceVCI?->status === 'active' ? 'Active' : 'Inactive',
                     'product_name' => $item->product?->name,
-                    'vendor_name' => $item->vendor?->name,
+                    'vendor_name' => $item->vendor?->vendor,
                     'created_at' => $item->created_at,
                     'updated_at' => $item->updated_at,
                 ];

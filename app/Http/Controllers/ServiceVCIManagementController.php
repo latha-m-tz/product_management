@@ -66,9 +66,25 @@ class ServiceVCIManagementController extends Controller
                 'testing_status' => $itemData['testing_status'] ?? 'pending',
             ]);
         }
+        
+        $serviceVCI->load(['items.product', 'items.vendor', 'items.serviceVCI']);
+        $response=$serviceVCI->toArray();
+        $response['items']=$serviceVCI->items->map(function ($item){
+            return [ 'id'           => $item->id,
+            'vci_serial_no'=> $item->vci_serial_no,
+            'product_name' => $item->product?->name,
+            'vendor_name'  => $item->vendor?->vendor,
+            'challan_no'   => $item->serviceVCI?->challan_no,
+            'challan_date' => $item->serviceVCI?->challan_date,
+            'status'       => $item->serviceVCI?->status === 'active' ? 'Active' : 'Inactive',
+            'tested_date'  => $item->tested_date,
+            'testing_status' => $item->testing_status,
+        ];
+    });
 
-        return response()->json($serviceVCI->load('items'), 201);
-    }
+    return response()->json($response, 201);
+        }
+
 
     public function show($id)
     {
@@ -142,7 +158,24 @@ class ServiceVCIManagementController extends Controller
             }
         }
 
-        return response()->json($serviceVCI->load('items'));
+        $serviceVCI->load(['items.product', 'items.vendor', 'items.serviceVCI']);
+
+    $response = $serviceVCI->toArray();
+    $response['items'] = $serviceVCI->items->map(function ($item) {
+        return [
+            'id'           => $item->id,
+            'vci_serial_no'=> $item->vci_serial_no,
+            'product_name' => $item->product?->name,
+            'vendor_name'  => $item->vendor?->vendor,
+            'challan_no'   => $item->serviceVCI?->challan_no,
+            'challan_date' => $item->serviceVCI?->challan_date,
+            'status'       => $item->serviceVCI?->status === 'active' ? 'Active' : 'Inactive',
+            'tested_date'  => $item->tested_date,
+            'testing_status' => $item->testing_status,
+        ];
+    });
+
+    return response()->json($response);
     }
 
     public function destroy($id)
@@ -156,5 +189,11 @@ class ServiceVCIManagementController extends Controller
         $serviceVCI->delete();
 
         return response()->json(['message' => 'Service VCI and its items deleted successfully']);
+    }
+    
+    public function getAllVCISerialNumbers()
+    {
+        $serialNumbers = VCIServiceItems::pluck('vci_serial_no')->map(fn($s) => trim($s));
+        return response()->json($serialNumbers);
     }
 }
