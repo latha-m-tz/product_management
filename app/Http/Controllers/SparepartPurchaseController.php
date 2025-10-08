@@ -288,10 +288,15 @@ $spareParts = DB::table('spareparts as s')
     ->get();
 
     $vendors = Vendor::with('contactPersons')->get();
+$categories = DB::table('product')
 
-    $categories = DB::table('product')
-        ->select('id', 'name')
-        ->get();
+    ->select('id', 'name')
+
+    ->whereNull('deleted_by')
+
+    ->get();
+
+ 
 
     return response()->json([
         'spareparts' => $spareParts,
@@ -908,6 +913,80 @@ public function view()
         ]
     ]);
 }
+public function getAllSeriesCounts()
+{
+    $allSeries = ['5-series', '7-series', '8-series', '9-series', '0-series'];
+
+    $results = [];
+
+    foreach ($allSeries as $series) {
+        $results[] = $this->calculateSeriesData($series);
+    }
+
+    return response()->json([
+        'success' => true,
+        'data' => $results
+    ]);
+}
+
+private function calculateSeriesData($series)
+{
+    $baseParts = [
+        ['name' => 'BOLT', 'required_per_vci' => 4],
+        ['name' => 'End Plate', 'required_per_vci' => 1],
+        ['name' => 'Mahle Sticker', 'required_per_vci' => 1],
+        ['name' => 'Nut', 'required_per_vci' => 4],
+        ['name' => 'OBD Connector', 'required_per_vci' => 1],
+    ];
+
+    // Series-specific parts
+    if (str_contains($series, '5')) {
+        $baseParts[] = ['name' => 'PCB Board', 'required_per_vci' => 1];
+        $baseParts[] = ['name' => 'Boot Rubber', 'required_per_vci' => 1];
+        $baseParts[] = ['name' => 'Red Rubber', 'required_per_vci' => 1];
+    } elseif (str_contains($series, '7')) {
+        $baseParts[] = ['name' => 'PCB Board', 'required_per_vci' => 1];
+        $baseParts[] = ['name' => 'Grey Boot Rubber', 'required_per_vci' => 1];
+    }
+
+    // Calculate available quantities based on series
+    $parts = collect($baseParts)->map(function ($part) use ($series) {
+
+        // Look for PCB Board purchased for that series only
+        $query = \DB::table('sparepart_purchase_items as spi')
+            ->join('spareparts as sp', 'spi.sparepart_id', '=', 'sp.id')
+            ->leftJoin('product as p', 'spi.product_id', '=', 'p.id')
+            ->whereRaw('LOWER(sp.name) = ?', [strtolower($part['name'])]);
+
+        // Add series filter only for PCB Board (or any series-based part)
+        if (strtolower($part['name']) === 'pcb board') {
+            $query->where('p.name', 'LIKE', "%{$series}%");
+        }
+
+        $availableQty = $query->sum('spi.quantity');
+
+        $boardsPossible = $part['required_per_vci'] > 0
+            ? intdiv($availableQty, $part['required_per_vci'])
+            : 0;
+
+        return [
+            'name' => $part['name'],
+            'available_quantity' => $availableQty,
+            'required_per_vci' => $part['required_per_vci'],
+            'boards_possible' => $boardsPossible,
+        ];
+    });
+
+    return [
+        'series' => $series,
+        'spare_parts' => $parts->values(),
+        'max_vci_possible' => $parts->min('boards_possible'),
+        'shortages' => [],
+    ];
+}
+
+
+
 
 
 

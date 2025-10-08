@@ -177,4 +177,22 @@ public function index()
  
 
 
+public function customercount()
+    {
+        try {
+            $count = Customer::count();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Customer count fetched successfully',
+                'count'   => $count
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error fetching customer count: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+ 
 }

@@ -24,7 +24,8 @@ class Inventory extends Model
         'to_serial',
         'quantity',
         'created_by',
-        'updated_by'
+        'updated_by',
+        'deleted_by',
     ];
 
     protected $casts = [

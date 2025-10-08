@@ -114,7 +114,7 @@ class ServiceVCIManagementController extends Controller
             'from_place' => 'nullable|string|max:100',
             'to_place' => 'nullable|string|max:100',
             'items' => 'sometimes|array',
-            'items.*.id' => 'required|integer|exists:service_vci_items,id',
+            'items.*.id' => 'nullable|integer|exists:service_vci_items,id',
             'items.*.vci_serial_no' => 'required|string|max:50',
             'items.*.tested_date' => 'nullable|date',
             'items.*.issue_found' => 'nullable|string|max:100',
@@ -141,8 +141,10 @@ class ServiceVCIManagementController extends Controller
             'to_place'      => $request->to_place ?? $serviceVCI->to_place,
         ]);
 
-        if ($request->has('items')) {
-            foreach ($request->items as $itemData) {
+         if ($request->has('items')) {
+        foreach ($request->items as $itemData) {
+            if (!empty($itemData['id'])) {
+                // Update existing item
                 $item = VCIServiceItems::find($itemData['id']);
                 if ($item && $item->service_vci_id == $serviceVCI->id) {
                     $item->update([
@@ -155,8 +157,20 @@ class ServiceVCIManagementController extends Controller
                         'testing_status' => $itemData['testing_status'] ?? 'pending',
                     ]);
                 }
+            } else {
+                // Create new item
+                $serviceVCI->items()->create([
+                    'vci_serial_no' => $itemData['vci_serial_no'],
+                    'tested_date' => $itemData['tested_date'] ?? null,
+                    'issue_found' => $itemData['issue_found'] ?? null,
+                    'action_taken' => $itemData['action_taken'] ?? null,
+                    'remarks' => $itemData['remarks'] ?? null,
+                    'testing_assigned_to' => $itemData['testing_assigned_to'] ?? null,
+                    'testing_status' => $itemData['testing_status'] ?? 'pending',
+                ]);
             }
         }
+    }
 
         $serviceVCI->load(['items.product', 'items.vendor', 'items.serviceVCI']);
 
