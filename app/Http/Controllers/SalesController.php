@@ -285,7 +285,7 @@ class SalesController extends Controller
     {
         $serials = \DB::table('inventory')
         ->where('product_id', $productId)
-        ->select ('id', 'serial_no','product_id')
+        ->select ('id', 'serial_no','product_id','tested_status')
         ->get();
         return response()->json($serials);
     }

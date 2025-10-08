@@ -287,5 +287,16 @@ class VendorController extends Controller
 //     }
 // }
 
+public function vendorCount()
+{
+    $count = Vendor::count();
+
+    return response()->json([
+        'success' => true,
+        'message' => 'Vendor count fetched successfully',
+        'count'   => $count
+    ]);
+}
+
 
 }

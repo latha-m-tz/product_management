@@ -36,6 +36,8 @@ Route::prefix('product-types')->group(function () {
     Route::post('/', [ProductTypeController::class, 'store']);
     Route::put('/{id}', [ProductTypeController::class, 'update']);
     Route::delete('/{id}', [ProductTypeController::class, 'destroy']);
+    Route::post('/link', [ProductTypeController::class, 'linkToProduct']);
+
 });
 
 Route::prefix('product')->group(function() {
@@ -44,6 +46,7 @@ Route::prefix('product')->group(function() {
     Route::post('/', [ProductController::class, 'store']);
     Route::put('/{id}', [ProductController::class, 'update']);
     Route::delete('/{id}', [ProductController::class, 'destroy']);
+    Route::get('/types/{id}', [ProductController::class, 'getTypesByProduct']);
 });
 
 
@@ -70,7 +73,7 @@ Route::get('/spareparts/{id}/edit', [SparepartController::class, 'edit']);
 Route::put('/spareparts/{id}', [SparepartController::class, 'update']);
 Route::delete('/spareparts/{id}/del', [SparepartController::class, 'destroy']);
 Route::get('/spareparts/get', [SparepartController::class, 'index']);
-
+Route::get('/spareparts/{id}', [SparepartController::class, 'count']);
 Route::get('/get-spareparts', [SparepartPurchaseController::class, 'getAvailableSpareparts']);
 Route::post('/sparepartNew-purchases', [SparepartPurchaseController::class, 'store']);
 Route::get('/sparepart-purchases', [SparepartPurchaseController::class, 'index']);
@@ -83,8 +86,9 @@ Route::delete('/sparepart-purchase-items/{id}', [SparepartPurchaseController::cl
 Route::get('/sparepart-purchases/view/{id}', [SparepartPurchaseController::class, 'show']);
 Route::post('/check-sparepart-serials', [SparepartPurchaseController::class, 'checkSerials']);
 Route::get('/get-purchase', [SparepartPurchaseController::class, 'view']);
-
+Route::get('/counts', [SparepartPurchaseController::class, 'getAllSeriesCounts']);
 Route::get('/vci-capacity', [SparepartPurchaseController::class, 'components']);
+Route::get('/product-types/product/{id}', [ProductTypeController::class, 'getProduct']);
 
 
 Route::get('/inventory/serial-numbers', [InventoryController::class, 'serialNumbers']);
@@ -99,6 +103,9 @@ Route::delete('/serialrange/{from_serial}/{to_serial}', [InventoryController::cl
     Route::post('/', [InventoryController::class, 'store']);
     Route::put('/{id}', [InventoryController::class, 'update']);
     Route::delete('/{id}', [InventoryController::class, 'destroy']);
+    Route::post('/{serial_number}', [InventoryController::class, 'deleteSerial']);
+    Route::get('/missing-serials/{from_serial}/{to_serial}', [InventoryController::class, 'getMissingSerials']);
+
 });
 
 
@@ -118,9 +125,9 @@ Route::get('/service-vci/{id}', [ServiceVCIManagementController::class, 'show'])
 Route::put('/service-vci/{id}', [ServiceVCIManagementController::class, 'update']);
 Route::delete('/service-vci/{id}', [ServiceVCIManagementController::class, 'destroy']);
 Route::get('/barcode/{barcode}', [BarcodeController::class, 'getProductInfo']);
+Route::get('get-serviceserials', [ServiceVCIManagementController::class, 'getAllVCISerialNumbers']);
 
 Route::get('/tracking-timeline/{serial_number}', [TrackingTimelineController::class, 'show']);
 Route::delete('/purchase-items/{purchase_id}/{sparepart_id}', [SparepartController::class, 'deleteItem']);
 Route::get('/sales/serials/{productId}', [SalesController::class, 'getSaleSerials']);
 Route::get('/products/{productId}/serials', [SalesController::class, 'getProductSerials']);
-Route::get('service-vci/added-serials', [ServiceVCIManagementController::class, 'getAllVCISerialNumbers']);

@@ -105,4 +105,44 @@ class ProductController extends Controller
 
         return response()->json(['message' => 'Product deleted successfully']);
     }
+public function getProductCount()
+{
+    try {
+        $totalCount = Product::whereNull('deleted_at')->count();
+
+        return response()->json([
+            'success' => true,
+            'data' => [], // no grouping by series
+            'total_count' => $totalCount,
+        ]);
+    } catch (\Exception $e) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Failed to fetch product count',
+            'error' => $e->getMessage(),
+        ], 500);
+    }
+}
+
+// Get all product types for a given product
+public function getTypesByProduct($productId)
+{
+    $product = \App\Models\Product::where('id', $productId)
+        ->whereNull('deleted_at')
+        ->with(['productTypes' => function ($query) {
+            $query->whereNull('deleted_at'); // only active types
+        }])
+        ->first();
+
+    if (!$product) {
+        return response()->json(['error' => 'Product not found'], 404);
+    }
+
+    return response()->json([
+        'product_id' => $product->id,
+        'product_name' => $product->name,
+        'product_types' => $product->productTypes
+    ]);
+}
+
 }
