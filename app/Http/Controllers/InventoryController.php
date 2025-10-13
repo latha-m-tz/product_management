@@ -568,30 +568,53 @@ public function countBySeries()
 
 public function getMissingSerials($from_serial, $to_serial)
 {
-    // --- Validate numeric range ---
     if (!is_numeric($from_serial) || !is_numeric($to_serial)) {
-        return response()->json([
-            'message' => 'Serial range must be numeric.'
-        ], 400);
+        return response()->json(['message' => 'Serial range must be numeric.'], 400);
     }
 
     if ((int)$from_serial > (int)$to_serial) {
-        return response()->json([
-            'message' => 'Invalid range: from_serial cannot be greater than to_serial.'
-        ], 400);
+        return response()->json(['message' => 'Invalid range: from_serial cannot be greater than to_serial.'], 400);
     }
 
-    // --- Full range of serials ---
-    $fullRange = range((int)$from_serial, (int)$to_serial);
+    $from_serial = (int)$from_serial;
+    $to_serial = (int)$to_serial;
 
-    // --- Fetch existing inventory serials with product info ---
+    $fullRange = range($from_serial, $to_serial);
+
+    // --- Identify the product name from the first serial ---
+    $productName = '-';
+    $productTypeName = 'vci'; // always VCI as per your request
+
+    // Try to detect product series based on first serial (like 9-series)
+    $firstDigit = substr((string)$from_serial, 0, 1);
+    switch ($firstDigit) {
+        case '5':
+            $productName = '5-series';
+            break;
+        case '7':
+            $productName = '7-series';
+            break;
+        case '8':
+            $productName = '8-series';
+            break;
+        case '9':
+            $productName = '9-series';
+            break;
+        case '0':
+            $productName = '0-series';
+            break;
+        default:
+            $productName = 'Unknown Series';
+    }
+
+    // --- Fetch existing inventory serials ---
     $existingSerials = Inventory::whereNull('deleted_at')
         ->whereBetween('serial_no', [$from_serial, $to_serial])
         ->with(['product:id,name', 'productType:id,name'])
         ->get(['serial_no', 'product_id', 'product_type_id'])
-        ->keyBy('serial_no'); // key by serial_no for easy lookup
+        ->keyBy('serial_no');
 
-    // --- Fetch deleted serials with product info using join ---
+    // --- Fetch deleted serials ---
     $deletedSerials = \DB::table('deleted_serials')
         ->leftJoin('product', 'deleted_serials.product_id', '=', 'product.id')
         ->leftJoin('product_type', 'deleted_serials.product_type_id', '=', 'product_type.id')
@@ -604,36 +627,35 @@ public function getMissingSerials($from_serial, $to_serial)
             'product_type.name as product_type_name'
         )
         ->get()
-        ->keyBy('serial_no'); // key by serial_no for easy lookup
+        ->keyBy('serial_no');
 
-    // --- Build missing serials list with product info ---
+    // --- Build missing serials list ---
     $missingSerials = [];
 
     foreach ($fullRange as $serial) {
-        // Skip if serial exists in inventory
         if (isset($existingSerials[$serial])) continue;
 
-        // Check if it exists in deleted_serials
         $deleted = $deletedSerials[$serial] ?? null;
-
-        $productName = $deleted?->product_name ?? '-';
-        $productTypeName = $deleted?->product_type_name ?? '-';
 
         $missingSerials[] = [
             'serial_no' => $serial,
-            'product' => ['name' => $productName],
-            'product_type' => ['name' => $productTypeName],
+            'product' => [
+                'name' => $deleted->product_name ?? $productName,
+            ],
+            'product_type' => [
+                'name' => $deleted->product_type_name ?? $productTypeName,
+            ],
         ];
     }
 
-    // --- Sort by serial_no ---
     usort($missingSerials, fn($a, $b) => $a['serial_no'] <=> $b['serial_no']);
 
-    // --- Response ---
     return response()->json([
         'message' => 'Missing or deleted serials in the range.',
         'from_serial' => $from_serial,
         'to_serial' => $to_serial,
+        'series' => $productName,
+        'product_type' => $productTypeName,
         'missing_count' => count($missingSerials),
         'missing_serials' => $missingSerials,
     ]);

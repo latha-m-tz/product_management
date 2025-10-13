@@ -48,7 +48,7 @@ class ServiceVCIManagementController extends Controller
             'courier_name'  => $request->courier_name,
             'hsn_code'      => $request->hsn_code,
             'quantity'      => $request->quantity,
-            'status'        => $request->status ?? 'active', // default
+            'status'        => $request->status ?? 'active',
             'sent_date'     => $request->sent_date,
             'received_date' => $request->received_date,
             'from_place'    => $request->from_place,
@@ -85,7 +85,7 @@ class ServiceVCIManagementController extends Controller
     return response()->json($response, 201);
         }
 
-
+        
     public function show($id)
     {
         $serviceVCI = VCIService::with('items')->find($id);
