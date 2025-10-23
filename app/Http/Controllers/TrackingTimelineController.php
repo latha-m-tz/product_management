@@ -58,22 +58,23 @@ class TrackingTimelineController extends Controller
             });
 
         // --- VCI Service ---
-        $serviceVCI = VCIServiceItems::with(['product', 'productType'])
-            ->where('vci_serial_no', $serial_number)
-            ->get()
-            ->map(function ($item) {
-                return [
-                    'id' => $item->id,
-                    'challan_no' => $item->serviceVCI?->challan_no,
-                    'challan_date' => $item->serviceVCI?->challan_date,
-                    'status' => $item->serviceVCI?->status === 'active' ? 'Active' : 'Inactive',
-                    'product_name' => $item->product?->name,
-                    'vendor_name' => $item->vendor?->vendor,
-                    'created_at' => $item->created_at,
-                    'updated_at' => $item->updated_at,
-                ];
-            });
-
+        $serviceVCI = VCIServiceItems::with(['product', 'productType', 'serviceVCI'])
+    ->where('vci_serial_no', $serial_number)
+    ->get()
+    ->map(function ($item) {
+        return [
+            'id'            => $item->id,
+            'challan_no'    => $item->serviceVCI?->challan_no,
+            'challan_date'  => $item->serviceVCI?->challan_date,
+            'courier_name'        => $item->serviceVCI?->courier_name,
+            'from_place'    => $item->serviceVCI?->from_place,
+            'to_place'      => $item->serviceVCI?->to_place,
+            'product_name'  => $item->product?->name,
+            'vendor_name'   => $item->vendor?->vendor,
+            'created_at'    => $item->created_at,
+            'updated_at'    => $item->updated_at,
+        ];
+    });
         // --- Sales ---
         $sales = Sale::with([
             'customer:id,customer,email,mobile_no',

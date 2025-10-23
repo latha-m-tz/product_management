@@ -14,6 +14,7 @@ use App\Http\Controllers\SalesController;
 use App\Http\Controllers\ServiceVCIManagementController;
 use App\Http\Controllers\BarcodeController;
 use App\Http\Controllers\TrackingTimelineController;
+use App\Http\Controllers\TechnicianController;
 
 // Route::get('/user', function (Request $request) {
 //     return $request->user();
@@ -89,6 +90,7 @@ Route::get('/get-purchase', [SparepartPurchaseController::class, 'view']);
 Route::get('/counts', [SparepartPurchaseController::class, 'getAllSeriesCounts']);
 Route::get('/vci-capacity', [SparepartPurchaseController::class, 'components']);
 Route::get('/product-types/product/{id}', [ProductTypeController::class, 'getProduct']);
+Route::delete('/purchase-items/{purchaseId}/{itemId}', [SparepartPurchaseController::class, 'deleteItem']);
 
 
 Route::get('/inventory/serial-numbers', [InventoryController::class, 'serialNumbers']);
@@ -131,3 +133,4 @@ Route::get('/tracking-timeline/{serial_number}', [TrackingTimelineController::cl
 Route::delete('/purchase-items/{purchase_id}/{sparepart_id}', [SparepartController::class, 'deleteItem']);
 Route::get('/sales/serials/{productId}', [SalesController::class, 'getSaleSerials']);
 Route::get('/products/{productId}/serials', [SalesController::class, 'getProductSerials']);
+Route::apiResource('technicians', TechnicianController::class);

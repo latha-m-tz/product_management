@@ -15,7 +15,7 @@ class VendorController extends Controller
     public function Vendorstore(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'vendor'         => 'required|string|max:255',
+           'vendor'=> 'required|string|max:255|unique:vendors,vendor',
             'gst_no'         => 'nullable|string|max:15|unique:vendors,gst_no',
             'email'          => 'nullable|email|max:255|unique:vendors,email',
             'pincode'        => 'nullable|digits:6',
