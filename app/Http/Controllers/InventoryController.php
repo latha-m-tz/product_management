@@ -129,7 +129,21 @@ public function store(Request $request)
         foreach ($validated['items'] as $item) {
             $serial = $item['serial_no'];
 
-            // Skip if marked deleted
+            // 1️⃣ Check if serial is purchased for this product
+            $isPurchased = \App\Models\SparepartPurchaseItem::where('product_id', $validated['product_id'])
+                ->where('serial_no', $serial)
+                ->exists();
+
+            if (!$isPurchased) {
+                $results[] = [
+                    'serial_no' => $serial,
+                    'status' => 'not_purchased',
+                    'message' => 'This serial is not purchased for the selected product.',
+                ];
+                continue; // Skip adding to inventory
+            }
+
+            // 2️⃣ Skip if marked deleted
             $isDeletedSerial = \App\Models\DeletedSerial::where('serial_no', $serial)
                 ->where('product_id', $validated['product_id'])
                 ->where('product_type_id', $validated['product_type_id'])
@@ -144,7 +158,7 @@ public function store(Request $request)
                 continue;
             }
 
-            // Skip if already active in inventory
+            // 3️⃣ Skip if already in inventory
             $exists = \App\Models\Inventory::where('product_id', $validated['product_id'])
                 ->where('product_type_id', $validated['product_type_id'])
                 ->where('serial_no', $serial)
@@ -160,7 +174,7 @@ public function store(Request $request)
                 continue;
             }
 
-            // Store inventory
+            // 4️⃣ Add to inventory
             $inventory = \App\Models\Inventory::create([
                 'product_id'       => $validated['product_id'],
                 'product_type_id'  => $validated['product_type_id'],
@@ -206,13 +220,6 @@ public function store(Request $request)
         ], 500);
     }
 }
-
-
-
-
-
-
-
 
 
 public function update(Request $request, $id)
