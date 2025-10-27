@@ -16,21 +16,25 @@ class VCIServiceItems extends Model
     protected $table = 'service_vci_items';
 
     protected $fillable = [
-        'vci_serial_no',
-        'service_vci_id',
-        'tested_date',
-        'issue_found',
-        'action_taken',
-        'remarks',
-        'testing_assigned_to',
-        'testing_status',
-        'product_id',
-        'product_type_id',
-        'vendor_id',
-        'created_by',
-        'updated_by',
-        'deleted_by',
-    ];
+    'vci_serial_no',
+    'service_vci_id',
+    'tested_date',
+    'issue_found',
+    'action_taken',
+    'remarks',
+    'testing_assigned_to',
+    'testing_status',
+    'product_id',
+    'vendor_id',
+    'upload_image',
+    'created_by',
+    'updated_by',
+    'deleted_by',
+    'warranty_status',  
+    'urgent',         
+
+];
+
 
     public function serviceVCI()
     {

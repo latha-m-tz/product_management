@@ -23,7 +23,7 @@ public function store(Request $request)
         'vendor_id' => 'required|integer|exists:vendors,id',
         'challan_no' => 'required|string|max:50|unique:sparepart_purchase,challan_no',
         'challan_date' => ['required', 'date_format:d-m-Y', 'before_or_equal:today'],
-        'received_date' => ['nullable', 'date_format:d-m-Y', 'before_or_equal:today'],
+        'received_date' => ['required', 'date_format:d-m-Y', 'before_or_equal:today'], // now required
         'items' => 'required|array|min:1',
         'items.*.product_id' => 'nullable|integer|exists:product,id',
         'items.*.sparepart_id' => 'nullable|integer|exists:spareparts,id',
@@ -38,14 +38,30 @@ public function store(Request $request)
     ]);
 
     $allSerials = [];
+   $allSpareparts = [];
 
-    // Collect all serials
-    foreach ($request->items as $item) {
+foreach ($request->items as $index => $item) {
+    $spareKey = ($item['product_id'] ?? '0') . '_' . ($item['sparepart_id'] ?? '0');
+
+    if (isset($allSpareparts[$spareKey])) {
+        // Get sparepart name from DB if sparepart_id exists
+        $sparepartName = $item['sparepart_id'] 
+            ? \App\Models\Sparepart::find($item['sparepart_id'])->name ?? 'Unknown Sparepart'
+            : 'Unknown Sparepart';
+        return response()->json([
+            'errors' => ['items' => ["Duplicate spare part in request: " . $sparepartName]]
+        ], 422);
+    }
+
+    $allSpareparts[$spareKey] = true;
+
+        // Serial numbers from comma-separated field
         if (!empty($item['serial_no'])) {
             $serials = array_map('trim', explode(',', $item['serial_no']));
             foreach ($serials as $s) if ($s !== '') $allSerials[] = strtoupper($s);
         }
 
+        // Serial numbers from range
         if (!empty($item['from_serial']) && !empty($item['to_serial'])) {
             preg_match('/^(.*?)(\d+)$/', $item['from_serial'], $fromParts);
             preg_match('/^(.*?)(\d+)$/', $item['to_serial'], $toParts);
@@ -76,7 +92,7 @@ public function store(Request $request)
             ->toArray();
 
         if (!empty($exists)) {
-            return response()->json(['errors' => ['items' => ["Serial(s) already exist in DB: " . implode(', ', $exists)]]], 422);
+            return response()->json(['errors' => ['items' => ["Serial(s) already exist: " . implode(', ', $exists)]]], 422);
         }
     }
 
@@ -96,7 +112,7 @@ public function store(Request $request)
         'vendor_id' => $request->vendor_id,
         'challan_no' => $request->challan_no,
         'challan_date' => Carbon::createFromFormat('d-m-Y', $request->challan_date)->format('Y-m-d'),
-        'received_date' => $request->received_date ? Carbon::createFromFormat('d-m-Y', $request->received_date)->format('Y-m-d') : null,
+        'received_date' => Carbon::createFromFormat('d-m-Y', $request->received_date)->format('Y-m-d'),
         'document_recipient' => $images['image_recipient'] ?? null,
         'document_challan_1' => $images['image_challan_1'] ?? null,
         'document_challan_2' => $images['image_challan_2'] ?? null,
@@ -300,8 +316,8 @@ public function update(Request $request, $id)
     $request->validate([
         'vendor_id' => 'required|integer|exists:vendors,id',
         'challan_no' => 'required|string|max:50',
-        'challan_date' => ['required', 'date_format:d-m-Y', 'before_or_equal:today'],
-        'received_date' => ['nullable', 'date_format:d-m-Y', 'before_or_equal:today'],
+        'challan_date' => ['required', 'before_or_equal:today'],
+        'received_date' => ['required', 'before_or_equal:today'],
         'items' => 'nullable|array|min:1',
         'items.*.id' => 'nullable|integer',
         'items.*.product_id' => 'nullable|integer|exists:product,id',
@@ -319,7 +335,51 @@ public function update(Request $request, $id)
 
     $purchase = SparepartPurchase::findOrFail($id);
 
-    // Handle images
+    $allSpareparts = [];
+
+    foreach ($request->items as $item) {
+        $spareKey = ($item['product_id'] ?? '0') . '_' . ($item['sparepart_id'] ?? '0');
+
+        if (isset($allSpareparts[$spareKey])) {
+            $sparepartName = $item['sparepart_id']
+                ? \App\Models\Sparepart::find($item['sparepart_id'])->name ?? 'Unknown Sparepart'
+                : 'Unknown Sparepart';
+
+            return response()->json([
+                'errors' => [
+                    'items' => ["Duplicate spare part in request: " . $sparepartName]
+                ]
+            ], 422);
+        }
+
+        $allSpareparts[$spareKey] = true;
+
+        // ---------- Validate serial prefix ----------
+        if (!empty($item['from_serial']) || !empty($item['to_serial'])) {
+            $product = $item['product_id'] ? \App\Models\Product::find($item['product_id']) : null;
+            $prefix = $product ? trim($product->seriesPrefix ?? $product->series ?? '') : '';
+
+            if ($prefix) {
+                $prefix = preg_replace('/[-\s]/', '', $prefix); // remove dash/space
+                $serialsToCheck = [$item['from_serial'], $item['to_serial']];
+                foreach ($serialsToCheck as $serial) {
+                    if ($serial && stripos($serial, $prefix) !== 0) {
+                        $spName = $item['sparepart_id']
+                            ? \App\Models\Sparepart::find($item['sparepart_id'])->name ?? 'Unknown Sparepart'
+                            : 'Unknown Sparepart';
+
+                        return response()->json([
+                            'errors' => [
+                                'items' => ["Serial number '{$serial}' does not match product '{$product->name}' prefix '{$prefix}' (Sparepart: {$spName})"]
+                            ]
+                        ], 422);
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------- Handle images ----------
     $images = [];
     foreach (['image_recipient', 'image_challan_1', 'image_challan_2'] as $img) {
         if ($request->hasFile($img)) {
@@ -330,18 +390,18 @@ public function update(Request $request, $id)
         }
     }
 
-    // Update purchase
+    // ---------- Update purchase ----------
     $purchase->update(array_merge([
         'vendor_id' => $request->vendor_id,
         'challan_no' => $request->challan_no,
-        'challan_date' => Carbon::createFromFormat('d-m-Y', $request->challan_date)->format('Y-m-d'),
-        'received_date' => $request->received_date ? Carbon::createFromFormat('d-m-Y', $request->received_date)->format('Y-m-d') : null,
+        'challan_date'=> $request->challan_date,
+        'received_date' => $request->received_date,
     ], $images));
 
+    // ---------- Handle items ----------
     $payloadItemIds = collect($request->items)->pluck('id')->filter()->all();
     $deletedIds = $request->deleted_ids ?? [];
 
-    // Delete removed items
     SparepartPurchaseItem::where('purchase_id', $purchase->id)
         ->whereNotIn('id', $payloadItemIds)
         ->orWhereIn('id', $deletedIds)
@@ -352,13 +412,14 @@ public function update(Request $request, $id)
     foreach ($request->items as $item) {
         $serials = $item['serials'] ?? [];
 
-        // Generate serials if from/to provided
         if (empty($serials) && $item['from_serial'] && $item['to_serial']) {
             $serials = [];
-            $start = intval($item['from_serial']);
-            $end = intval($item['to_serial']);
+            $start = intval(preg_replace('/\D/', '', $item['from_serial']));
+            $end = intval(preg_replace('/\D/', '', $item['to_serial']));
+            $prefix = preg_replace('/\d/', '', $item['from_serial']); // keep prefix
+
             for ($i = $start; $i <= $end; $i++) {
-                $serials[] = str_pad($i, strlen($item['from_serial']), '0', STR_PAD_LEFT);
+                $serials[] = $prefix . str_pad($i, 6, '0', STR_PAD_LEFT);
             }
         }
 
@@ -649,66 +710,67 @@ public function getAllSeriesCounts()
 }
 
 
-private function calculateSeriesData($series)
+public function getSeriesSpareparts($series)
 {
-    $baseParts = [
-        ['name' => 'Bolt', 'required_per_vci' => 4],
-        ['name' => 'End Plate', 'required_per_vci' => 1],
-        ['name' => 'Mahle Sticker', 'required_per_vci' => 1],
-        ['name' => 'Nut', 'required_per_vci' => 4],
-        ['name' => 'OBD Connector', 'required_per_vci' => 1],
-        ['name' => 'Enclosure', 'required_per_vci' => 1],
-        ['name' => 'Rubber Case', 'required_per_vci' => 1],
-        ['name' => 'White Panel', 'required_per_vci' => 2],
-    ];
+    $allSpareparts = Sparepart::all();
 
-    if (str_contains($series, '5')) {
-        $baseParts[] = ['name' => 'PCB Board', 'required_per_vci' => 1];
-        $baseParts[] = ['name' => 'Boot Rubber', 'required_per_vci' => 1];
-        $baseParts[] = ['name' => 'Red Rubber', 'required_per_vci' => 1];
-    } elseif (str_contains($series, '7')) {
-        $baseParts[] = ['name' => 'PCB Board', 'required_per_vci' => 1];
-        $baseParts[] = ['name' => 'Grey Boot Rubber', 'required_per_vci' => 1];
-    } elseif (str_contains($series, '8') || str_contains($series, '9') || str_contains($series, '0')) {
-        $baseParts[] = ['name' => 'PCB Board', 'required_per_vci' => 1];
-    }
+    // Extract series core name: e.g., "7-series" from "vci(7-series)"
+    $seriesNameCore = preg_replace('/.*\((.*)\)/', '$1', $series);
 
-    $seriesPrefix = substr($series, 0, 1); // '7' for 7-series
+    // Get common spare parts
+    $commonParts = $allSpareparts->filter(fn($part) => $part->sparepart_usages && stripos($part->sparepart_usages, 'common') !== false);
+
+    // Get series-specific spare parts
+    $seriesParts = $allSpareparts->filter(fn($part) => $part->sparepart_usages && stripos($part->sparepart_usages, $seriesNameCore) !== false);
+
+    // Merge both
+    $partsToProcess = $commonParts->merge($seriesParts);
+
+    // Count assembled VCIs from inventory (not deleted)
+    $seriesPrefix = substr($seriesNameCore, 0, 1);
     $assembledVCIs = \DB::table('inventory')
         ->whereNull('deleted_by')
-        ->where('serial_no', 'LIKE', $seriesPrefix . '%')  // ✅ Match only its own series
+        ->where('serial_no', 'LIKE', $seriesPrefix . '%')
         ->count();
 
-    $parts = collect($baseParts)->map(function ($part) use ($series, $assembledVCIs) {
+    $parts = $partsToProcess->map(function ($part) use ($seriesNameCore, $assembledVCIs) {
+
+        // Total purchased quantity from sparepart_purchase_items
         $purchasedQty = \DB::table('sparepart_purchase_items as spi')
-            ->join('spareparts as sp', 'spi.sparepart_id', '=', 'sp.id')
-            ->leftJoin('product as p', 'spi.product_id', '=', 'p.id')
-            ->whereRaw('LOWER(sp.name) = ?', [strtolower($part['name'])])
-            ->when(strtolower($part['name']) === 'pcb board', function ($query) use ($series) {
-                $query->where('p.name', 'LIKE', "%{$series}%");
-            })
+            ->where('spi.sparepart_id', $part->id)
             ->sum('spi.quantity');
 
-        $usedQty = $assembledVCIs * $part['required_per_vci'];
+        // Used quantity = assembled VCIs * required_per_vci
+        $requiredPerVCI = $part->required_per_vci ?? 1;
+        $usedQty = $assembledVCIs * $requiredPerVCI;
+
+        // Available quantity = purchased - used
         $availableQty = max($purchasedQty - $usedQty, 0);
-        $boardsPossible = $part['required_per_vci'] > 0 ? intdiv($availableQty, $part['required_per_vci']) : 0;
+
+        // Boards possible = how many more VCIs we can assemble with available quantity
+        $boardsPossible = $requiredPerVCI > 0 ? intdiv($availableQty, $requiredPerVCI) : 0;
 
         return [
-            'name' => $part['name'],
+            'id' => $part->id,
+            'name' => $part->name,
             'purchased_quantity' => $purchasedQty,
             'used_quantity' => $usedQty,
             'available_quantity' => $availableQty,
-            'required_per_vci' => $part['required_per_vci'],
+            'required_per_vci' => $requiredPerVCI,
             'boards_possible' => $boardsPossible,
+            'sparepart_usages' => $part->sparepart_usages,
         ];
     });
 
-    return [
+    return response()->json([
         'series' => $series,
         'spare_parts' => $parts->values(),
         'max_vci_possible' => $parts->min('boards_possible'),
         'shortages' => $parts->filter(fn($p) => $p['boards_possible'] === 0)->values(),
-    ];
+    ]);
 }
+
+
+
 
 }

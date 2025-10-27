@@ -30,6 +30,14 @@ Route::middleware('auth:api')->get('/user', function (Request $request) {
 Route::post('/login', [AuthController::class, 'login']);
 Route::post('/register', [AuthController::class, 'register']);
 Route::post('/logout', [AuthController::class, 'logout'])->middleware('auth:api');
+Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
+Route::post('/verify-otp', [AuthController::class, 'verifyOtp']);
+Route::post('/reset-password', [AuthController::class, 'resetPassword']);
+Route::view('/forgot-password-form', 'auth.forgot_password');
+Route::view('/reset-password-form', 'auth.reset_password');
+Route::get('/verify-otp-form', function () {
+    return view('auth.verify_otp');
+});
 
 Route::prefix('product-types')->group(function () {
     Route::get('/', [ProductTypeController::class, 'index']);
@@ -87,7 +95,7 @@ Route::delete('/sparepart-purchase-items/{id}', [SparepartPurchaseController::cl
 Route::get('/sparepart-purchases/view/{id}', [SparepartPurchaseController::class, 'show']);
 Route::post('/check-sparepart-serials', [SparepartPurchaseController::class, 'checkSerials']);
 Route::get('/get-purchase', [SparepartPurchaseController::class, 'view']);
-Route::get('/counts', [SparepartPurchaseController::class, 'getAllSeriesCounts']);
+Route::get('/counts/{series}', [SparepartPurchaseController::class, 'getSeriesSpareparts']);
 Route::get('/vci-capacity', [SparepartPurchaseController::class, 'components']);
 Route::get('/product-types/product/{id}', [ProductTypeController::class, 'getProduct']);
 Route::delete('/purchase-items/{purchaseId}/{itemId}', [SparepartPurchaseController::class, 'deleteItem']);
@@ -128,7 +136,7 @@ Route::put('/service-vci/{id}', [ServiceVCIManagementController::class, 'update'
 Route::delete('/service-vci/{id}', [ServiceVCIManagementController::class, 'destroy']);
 Route::get('/barcode/{barcode}', [BarcodeController::class, 'getProductInfo']);
 Route::get('get-serviceserials', [ServiceVCIManagementController::class, 'getAllVCISerialNumbers']);
-
+Route::get('/serviceitems',[ServiceVCIManagementController::class,'getAllServiceItems']);
 Route::get('/tracking-timeline/{serial_number}', [TrackingTimelineController::class, 'show']);
 Route::delete('/purchase-items/{purchase_id}/{sparepart_id}', [SparepartController::class, 'deleteItem']);
 Route::get('/sales/serials/{productId}', [SalesController::class, 'getSaleSerials']);
