@@ -281,14 +281,17 @@ class SalesController extends Controller
         return response()->json($serials);
     }
 
-    public function getProductSerials($productId)
-    {
-        $serials = \DB::table('inventory')
+public function getProductSerials($productId)
+{
+    $serials = \DB::table('inventory')
         ->where('product_id', $productId)
-        ->select ('id', 'serial_no','product_id','tested_status')
+        ->whereNull('deleted_at')   // only not deleted
+        ->select('id', 'serial_no', 'product_id', 'tested_status')
         ->get();
-        return response()->json($serials);
-    }
+
+    return response()->json($serials);
+}
+
 
 
 }

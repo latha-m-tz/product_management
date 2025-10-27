@@ -16,6 +16,8 @@ class Sparepart extends Model
         'name',
         'code',
         'sparepart_type',
-      
+          'sparepart_usages',
+          'required_per_vci'
+
     ];
 }

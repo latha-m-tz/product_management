@@ -6,25 +6,27 @@ use Illuminate\Database\Eloquent\Model;
 
 class VCIService extends Model
 {
-    //  use HasFactory;
 
     protected $table = 'service_vci';
-
     protected $fillable = [
-        'challan_no',
-        'challan_date',
-        'courier_name',
-        'hsn_code',
-        'quantity',
-        'status',
-        'sent_date',
-        'received_date',
-        'from_place',
-        'to_place',
-        'created_by',
-        'updated_by',
-        'deleted_by',
-    ];
+    'challan_no',
+    'challan_date',
+    'courier_name',
+    'quantity',
+    'status',
+    'sent_date',
+    'received_date',
+    'from_place',
+    'to_place',
+    'tracking_number',   
+    'challan_1',
+    'challan_2',        
+    'receipt_upload',    
+    'created_by',
+    'updated_by',
+    'deleted_by',
+];
+
 
     public function items()
     {

@@ -16,36 +16,41 @@ class SparepartController extends Controller
     /**
      * Store a newly created sparepart.
      */
-    public function store(Request $request)
-    {
-        $validated = $request->validate([
-            'code' => [
-                'required',
-                'string',
-                'max:50',
-                Rule::unique('spareparts', 'code'),
-            ],
-            'name' => [
-                'required',
-                'string',
-                'max:255',
-                function ($attribute, $value, $fail) {
-                    $normalizedName = strtolower(str_replace(' ', '', $value));
-                    if (Sparepart::whereRaw("REPLACE(LOWER(name), ' ', '') = ?", [$normalizedName])->exists()) {
-                        $fail('The ' . $attribute . ' has already been taken.');
-                    }
-                },
-            ],
-            'sparepart_type' => 'required|string|max:255',
-        ]);
+   public function store(Request $request)
+{
+    $validated = $request->validate([
+        'code' => [
+            'required',
+            'string',
+            'max:50',
+            Rule::unique('spareparts', 'code'),
+        ],
+        'name' => [
+            'required',
+            'string',
+            'max:255',
+            function ($attribute, $value, $fail) {
+                $normalizedName = strtolower(str_replace(' ', '', $value));
+                if (Sparepart::whereRaw("REPLACE(LOWER(name), ' ', '') = ?", [$normalizedName])->exists()) {
+                    $fail('The ' . $attribute . ' has already been taken.');
+                }
+            },
+        ],
+        'sparepart_type' => 'required|string|max:255',
+        'sparepart_usages' => 'nullable|string|max:255',
+        'required_per_vci' => 'nullable|integer|min:1', // NEW
+    ]);
 
-        $sparepart = Sparepart::create($validated);
+    // Set default value if not provided
+    $validated['required_per_vci'] = $validated['required_per_vci'] ?? 1;
 
-        return response()->json([
-            'message'   => 'Sparepart created successfully!',
-            'sparepart' => $sparepart
-        ], 201);
-    }
+    $sparepart = Sparepart::create($validated);
+
+    return response()->json([
+        'message'   => 'Sparepart created successfully!',
+        'sparepart' => $sparepart
+    ], 201);
+}
 
     /**
      * Edit a sparepart by ID.
@@ -92,18 +97,23 @@ class SparepartController extends Controller
         }
 
         // Validate fields
-        $validated = $request->validate([
-            'code' => [
-                'required',
-                'string',
-                'max:50',
-                Rule::unique('spareparts', 'code')->ignore($id),
-            ],
-            'name' => 'required|string|max:255',
-            'sparepart_type' => 'required|string|max:255',
-        ]);
+      $validated = $request->validate([
+    'code' => [
+        'required',
+        'string',
+        'max:50',
+        Rule::unique('spareparts', 'code')->ignore($id),
+    ],
+    'name' => 'required|string|max:255',
+    'sparepart_type' => 'required|string|max:255',
+    'sparepart_usages' => 'nullable|string|max:255',
+    'required_per_vci' => 'nullable|integer|min:1', // NEW
+]);
 
-        $sparepart->update($validated);
+// Set default if not provided
+$validated['required_per_vci'] = $validated['required_per_vci'] ?? 1;
+
+$sparepart->update($validated);
 
         return response()->json([
             'message'   => 'Sparepart updated successfully!',
