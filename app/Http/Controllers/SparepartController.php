@@ -176,14 +176,41 @@ $sparepart->update($validated);
     /**
      * List all spareparts.
      */
-    public function index()
-    {
-        $spareparts = Sparepart::all();
+public function index()
+{
+    $spareparts = Sparepart::all();
 
-        return response()->json([
-            'spareparts' => $spareparts
-        ], 200);
-    }
+    $sparepartsWithAvailableQty = $spareparts->map(function ($part) {
+        // Total purchased quantity
+        $purchasedQty = \DB::table('sparepart_purchase_items')
+            ->where('sparepart_id', $part->id)
+            ->sum('quantity');
+
+        // Total assembled VCIs
+        $assembledVCIs = \DB::table('inventory')
+            ->whereNull('deleted_by')
+            ->count();
+
+        // Required per VCI (default 1 if null)
+        $requiredPerVCI = $part->required_per_vci ?? 1;
+
+        // Used quantity
+        $usedQty = $assembledVCIs * $requiredPerVCI;
+
+        // Available quantity = purchased - used
+        $availableQty = max($purchasedQty - $usedQty, 0);
+
+        return [
+            'id' => $part->id,
+            'name' => $part->name,
+            'available_quantity' => $availableQty,
+        ];
+    });
+
+    return response()->json([
+        'spareparts' => $sparepartsWithAvailableQty->values(),
+    ], 200);
+}
 
     /**
      * Delete sparepart from purchase items.
