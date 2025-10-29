@@ -7,8 +7,9 @@ use Illuminate\Database\Eloquent\Model;
 class VCIService extends Model
 {
 
-    protected $table = 'service_vci';
-    protected $fillable = [
+protected $table = 'service_vci';
+
+protected $fillable = [
     'challan_no',
     'challan_date',
     'courier_name',
@@ -19,14 +20,17 @@ class VCIService extends Model
     'from_place',
     'to_place',
     'tracking_number',   
-    'challan_1',
-    'challan_2',        
-    'receipt_upload',    
+    'challan_files',
+    'receipt_files',      
     'created_by',
     'updated_by',
     'deleted_by',
 ];
 
+protected $casts = [
+    'challan_files' => 'array',
+    'receipt_files' => 'array',
+];
 
 public function serviceVCI()
 {
