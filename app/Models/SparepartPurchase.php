@@ -11,19 +11,23 @@ class SparepartPurchase extends Model
 
     protected $table = 'sparepart_purchase';
 
+
     protected $fillable = [
         'vendor_id',
         'challan_no',
+        'tracking_number',
         'challan_date',
-                'received_date',        
+        'received_date',
         'document_recipient',
-        'document_challan_1',   
-        'document_challan_2',  
+        'document_challan',
+        'created_by',
+        'updated_by',
+        'deleted_by'
+    ];
 
-           'created_by',
-           'updated_by',
-           'deleted_by'
-      
+    protected $casts = [
+        'document_recipient' => 'array',
+        'document_challan' => 'array',
     ];
 
     public function items()
