@@ -16,6 +16,7 @@ class SparepartPurchase extends Model
         'vendor_id',
         'challan_no',
         'tracking_number',
+        'courier_name',
         'challan_date',
         'received_date',
         'document_recipient',

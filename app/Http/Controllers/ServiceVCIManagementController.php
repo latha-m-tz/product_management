@@ -30,8 +30,6 @@ public function store(Request $request)
         'to_place' => 'nullable|string|max:100',
         'tracking_number' => 'nullable|string|max:100',
 
-        // Multiple file validations
-        'challan_files.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:2048',
         'receipt_files.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:2048',
 
         // Items validation
@@ -50,12 +48,12 @@ public function store(Request $request)
     }
 
     // ✅ Handle multiple file uploads
-    $challanFiles = [];
-    if ($request->hasFile('challan_files')) {
-        foreach ($request->file('challan_files') as $file) {
-            $challanFiles[] = $file->store('uploads/service_vci/challans', 'public');
-        }
-    }
+    // $challanFiles = [];
+    // if ($request->hasFile('challan_files')) {
+    //     foreach ($request->file('challan_files') as $file) {
+    //         $challanFiles[] = $file->store('uploads/service_vci/challans', 'public');
+    //     }
+    // }
 
     $receiptFiles = [];
     if ($request->hasFile('receipt_files')) {
@@ -77,7 +75,7 @@ public function store(Request $request)
         'from_place' => $request->from_place,
         'to_place' => $request->to_place,
         'tracking_number' => $request->tracking_number,
-        'challan_files' => $challanFiles,
+        // 'challan_files' => $challanFiles,
         'receipt_files' => $receiptFiles,
     ]);
 
@@ -168,7 +166,7 @@ public function update(Request $request, $id)
         'tracking_number' => 'nullable|string|max:100',
 
         // File validations
-        'challan_files.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:2048',
+        // 'challan_files.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:2048',
         'receipt_files.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:2048',
 
         // Items validation
@@ -188,19 +186,19 @@ public function update(Request $request, $id)
     }
 
     // ✅ Get current files from DB
-    $challanFiles = $serviceVCI->challan_files ?? [];
+    // $challanFiles = $serviceVCI->challan_files ?? [];
     $receiptFiles = $serviceVCI->receipt_files ?? [];
 
     // ✅ Handle removed challan files
-    if ($request->filled('removed_challan_files')) {
-        $removedChallanFiles = json_decode($request->removed_challan_files, true);
-        foreach ($removedChallanFiles as $file) {
-            if (Storage::disk('public')->exists($file)) {
-                Storage::disk('public')->delete($file);
-            }
-        }
-        $challanFiles = array_values(array_diff($challanFiles, $removedChallanFiles));
-    }
+    // if ($request->filled('removed_challan_files')) {
+    //     $removedChallanFiles = json_decode($request->removed_challan_files, true);
+    //     foreach ($removedChallanFiles as $file) {
+    //         if (Storage::disk('public')->exists($file)) {
+    //             Storage::disk('public')->delete($file);
+    //         }
+    //     }
+    //     $challanFiles = array_values(array_diff($challanFiles, $removedChallanFiles));
+    // }
 
     // ✅ Handle removed receipt files
     if ($request->filled('removed_receipt_files')) {
@@ -213,17 +211,17 @@ public function update(Request $request, $id)
         $receiptFiles = array_values(array_diff($receiptFiles, $removedReceiptFiles));
     }
 
-    if ($request->hasFile('challan_files')) {
-        foreach ($challanFiles as $oldFile) {
-            if (Storage::disk('public')->exists($oldFile)) {
-                Storage::disk('public')->delete($oldFile);
-            }
-        }
-        $challanFiles = [];
-        foreach ($request->file('challan_files') as $file) {
-            $challanFiles[] = $file->store('uploads/service_vci/challans', 'public');
-        }
-    }
+    // if ($request->hasFile('challan_files')) {
+    //     foreach ($challanFiles as $oldFile) {
+    //         if (Storage::disk('public')->exists($oldFile)) {
+    //             Storage::disk('public')->delete($oldFile);
+    //         }
+    //     }
+    //     $challanFiles = [];
+    //     foreach ($request->file('challan_files') as $file) {
+    //         $challanFiles[] = $file->store('uploads/service_vci/challans', 'public');
+    //     }
+    // }
 
     if ($request->hasFile('receipt_files')) {
         foreach ($receiptFiles as $oldFile) {
@@ -250,7 +248,7 @@ public function update(Request $request, $id)
         'from_place' => $request->from_place,
         'to_place' => $request->to_place,
         'tracking_number' => $request->tracking_number,
-        'challan_files' => $challanFiles,
+        // 'challan_files' => $challanFiles,
         'receipt_files' => $receiptFiles,
     ]);
 
@@ -314,7 +312,7 @@ public function update(Request $request, $id)
 
     // ✅ Reload updated relationships
     $serviceVCI->load(['items.product', 'items.vendor', 'items.serviceVCI']);
-
+    
     return response()->json($serviceVCI, 200);
 }
 

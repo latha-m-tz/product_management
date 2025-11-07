@@ -154,4 +154,50 @@ class AuthController extends Controller
             return response()->json(['status' => 'error', 'message' => 'Logout failed', 'details' => $e->getMessage()], 500);
         }
     }
+    public function getLogin(Request $request)
+{
+    $email = $request->query('email');
+    $password = $request->query('password');
+
+    if (!$email || !$password) {
+        return response()->json(['status' => 'error', 'message' => 'Email and password are required'], 400);
+    }
+
+    $user = User::where('email', $email)->first();
+
+    if (!$user) {
+        return response()->json(['status' => 'error', 'message' => 'This email is not registered.'], 401);
+    }
+
+    if (!Hash::check($password, $user->password)) {
+        return response()->json(['status' => 'error', 'message' => 'Incorrect password.'], 401);
+    }
+
+    $token = JWTAuth::attempt(['email' => $email, 'password' => $password]);
+
+    if (!$token) {
+        return response()->json(['status' => 'error', 'message' => 'Login failed.'], 401);
+    }
+
+    return response()->json([
+        'status' => 'success',
+        'message' => 'Login successful (GET)',
+        'data' => ['token' => $token, 'user' => JWTAuth::user()],
+    ]);
+}
+public function getUsers() {
+    $users = User::select('id', 'username')->get(); // fetch username and id
+    return response()->json($users);
+}
+public function index()
+{
+    $users = User::select('id', 'username')->get(); // select only needed fields
+    return response()->json($users);
+}
+protected function redirectTo($request)
+{
+    if (! $request->expectsJson()) {
+        abort(response()->json(['status' => 'error', 'message' => 'Unauthorized'], 401));
+    }
+}
 }

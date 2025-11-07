@@ -4,93 +4,192 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
-use App\Models\Product;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use App\Models\Product;
+use App\Models\Sparepart;
 
 class ProductController extends Controller
 {
-    public function index()
-    {
-        return Product::whereNull('deleted_at')
-                      ->with('productTypes') // because Product hasMany ProductType
-                      ->get();
-        
-    }
+    // ✅ Fetch all products with types, spareparts + required qty per product
+public function index()
+{
+    $products = Product::whereNull('deleted_at')
+        ->with(['productTypes']) // assuming relation name is productTypes
+        ->get();
 
+    $productsWithSpareparts = $products->map(function ($product) {
+
+        // Get sparepart requirements JSON: [{id, required_quantity}]
+        $sparepartRequirements = $product->sparepart_requirements ?? [];
+
+        // Fetch spareparts by IDs
+        $sparepartIds = collect($sparepartRequirements)->pluck('id')->toArray();
+        $spareparts = Sparepart::whereIn('id', $sparepartIds)->get();
+
+        $sparepartsMapped = $spareparts->map(function ($part) use ($sparepartRequirements) {
+            $required = collect($sparepartRequirements)
+                ->firstWhere('id', $part->id)['required_quantity'] ?? 0;
+
+            $purchasedQty = DB::table('sparepart_purchase_items')
+                ->where('sparepart_id', $part->id)
+                ->sum('quantity');
+
+            $assembledVCIs = DB::table('inventory')
+                ->whereNull('deleted_by')
+                ->count();
+
+            $usedQty = $assembledVCIs * $required;
+            $availableQty = max($purchasedQty - $usedQty, 0);
+
+            return [
+                'id' => $part->id,
+                'code' => $part->code,
+                'name' => $part->name,
+                'sparepart_type' => $part->sparepart_type,
+                'sparepart_usages' => $part->sparepart_usages,
+                'required_per_product' => $required,
+                'available_quantity' => $availableQty,
+                'used_quantity' => $usedQty,
+            ];
+        });
+
+        return [
+            'id' => $product->id,
+            'name' => $product->name,
+            'requirement_per_product' => $product->requirement_per_product,
+'product_type_name' => $product->productTypes->pluck('name')->implode(', '),
+            'product_types' => $product->productTypes,
+            'spareparts' => $sparepartsMapped,
+        ];
+    });
+
+    return response()->json($productsWithSpareparts, 200);
+}
+
+
+    // ✅ Show one product with types & spare parts
     public function show($id)
     {
         $product = Product::where('id', $id)
-                          ->whereNull('deleted_at')
-                          ->with('productTypes')
-                          ->first();
+            ->whereNull('deleted_at')
+            ->with('productTypes')
+            ->first();
 
         if (!$product) {
             return response()->json(['error' => 'Not found'], 404);
         }
 
-        return response()->json($product);
+        $sparepartRequirements = $product->sparepart_requirements ?? [];
+        $sparepartIds = collect($sparepartRequirements)->pluck('id')->toArray();
+        $spareparts = Sparepart::whereIn('id', $sparepartIds)->get();
+
+        $sparepartsMapped = $spareparts->map(function ($part) use ($sparepartRequirements) {
+            $required = collect($sparepartRequirements)
+                ->firstWhere('id', $part->id)['required_quantity'] ?? 0;
+
+            $purchasedQty = DB::table('sparepart_purchase_items')
+                ->where('sparepart_id', $part->id)
+                ->sum('quantity');
+
+            $assembledVCIs = DB::table('inventory')
+                ->whereNull('deleted_by')
+                ->count();
+
+            $usedQty = $assembledVCIs * $required;
+            $availableQty = max($purchasedQty - $usedQty, 0);
+
+            return [
+                'id' => $part->id,
+                'code' => $part->code,
+                'name' => $part->name,
+                'sparepart_type' => $part->sparepart_type,
+                'sparepart_usages' => $part->sparepart_usages,
+                'required_per_product' => $required,
+                'available_quantity' => $availableQty,
+                'used_quantity' => $usedQty,
+            ];
+        });
+
+        return response()->json([
+            'id' => $product->id,
+            'name' => $product->name,
+            'requirement_per_product' => $product->requirement_per_product,
+            'product_type_name' => $product->product_type_name,
+            'product_types' => $product->productTypes,
+            'spareparts' => $sparepartsMapped,
+        ]);
     }
 
-    // Create new product
+    // ✅ Create new product with sparepart requirements (JSON)
     public function store(Request $request)
-{
-    $validated = $request->validate([
-        'name' => [
-            'required',
-            function ($attribute, $value, $fail) {
+    {
+        $validated = $request->validate([
+            'name' => [
+                'required',
+                function ($attribute, $value, $fail) {
+                    $exists = Product::where('name', $value)
+                        ->whereNull('deleted_at')
+                        ->exists();
+                    if ($exists) {
+                        $fail("The $attribute has already been taken.");
+                    }
+                },
+            ],
+            'requirement_per_product' => 'nullable|numeric|min:0',
+            'product_type_name' => 'nullable|string|max:255',
+            'sparepart_requirements' => 'nullable|array', // [{id, required_quantity}]
+        ]);
 
-        
-                $exists = Product::where('name', $value)
-                    ->whereNull('deleted_at') 
-                    ->exists();
+        $product = Product::create([
+            'name' => $validated['name'],
+            'requirement_per_product' => $validated['requirement_per_product'] ?? 0,
+            'product_type_name' => $validated['product_type_name'] ?? null,
+            'sparepart_requirements' => $validated['sparepart_requirements'] ?? [],
+            'created_by' => Auth::id() ?? 1,
+        ]);
 
-                //      Log::info('is Exists', [
-                //     'exists' => $exists,
-                // ]);
-
-                if ($exists) {
-                    $fail("The $attribute has already been taken.");
-                }
-            },
-        ],
-    ]);
-
-    $validated['created_by'] = auth()->id() ?? 1;
-
-    $product = Product::create($validated);
-
-    return response()->json($product, 201);
-}
-
-  public function update(Request $request, $id)
-{
-    $product = Product::where('id', $id)->whereNull('deleted_at')->first();
-
-    if (!$product) {
-        return response()->json(['error' => 'Not found'], 404);
+        return response()->json([
+            'message' => 'Product created successfully',
+            'data' => $product,
+        ], 201);
     }
 
-    $validated = $request->validate([
-        'name' => [
-            'required',
-            Rule::unique('product', 'name')
-                ->ignore($id) // exclude current product
-                ->whereNull('deleted_at'), // respect soft delete
-        ],
-    ]);
+    // ✅ Update product & sparepart requirements JSON
+    public function update(Request $request, $id)
+    {
+        $product = Product::where('id', $id)->whereNull('deleted_at')->first();
 
-    $validated['updated_by'] = Auth::id() ?? 1;
+        if (!$product) {
+            return response()->json(['error' => 'Not found'], 404);
+        }
 
-    $product->update($validated);
+        $validated = $request->validate([
+            'name' => [
+                'required',
+                Rule::unique('product', 'name')->ignore($id)->whereNull('deleted_at'),
+            ],
+            'requirement_per_product' => 'nullable|numeric|min:0',
+            'product_type_name' => 'nullable|string|max:255',
+            'sparepart_requirements' => 'nullable|array',
+        ]);
 
-    return response()->json($product);
-}
+        $product->update([
+            'name' => $validated['name'],
+            'requirement_per_product' => $validated['requirement_per_product'] ?? 0,
+            'product_type_name' => $validated['product_type_name'] ?? null,
+            'sparepart_requirements' => $validated['sparepart_requirements'] ?? [],
+            'updated_by' => Auth::id() ?? 1,
+        ]);
 
+        return response()->json([
+            'message' => 'Product updated successfully',
+            'data' => $product,
+        ]);
+    }
 
-
-    // Soft delete product
+    // ✅ Soft delete
     public function destroy($id)
     {
         $product = Product::where('id', $id)->whereNull('deleted_at')->first();
@@ -105,44 +204,45 @@ class ProductController extends Controller
 
         return response()->json(['message' => 'Product deleted successfully']);
     }
-public function getProductCount()
-{
-    try {
-        $totalCount = Product::whereNull('deleted_at')->count();
+
+    // ✅ Product count
+    public function getProductCount()
+    {
+        try {
+            $totalCount = Product::whereNull('deleted_at')->count();
+
+            return response()->json([
+                'success' => true,
+                'data' => [],
+                'total_count' => $totalCount,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch product count',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    // ✅ Get types by product
+    public function getTypesByProduct($productId)
+    {
+        $product = Product::where('id', $productId)
+            ->whereNull('deleted_at')
+            ->with(['productTypes' => function ($query) {
+                $query->whereNull('deleted_at');
+            }])
+            ->first();
+
+        if (!$product) {
+            return response()->json(['error' => 'Product not found'], 404);
+        }
 
         return response()->json([
-            'success' => true,
-            'data' => [], // no grouping by series
-            'total_count' => $totalCount,
+            'product_id' => $product->id,
+            'product_name' => $product->name,
+            'product_types' => $product->productTypes,
         ]);
-    } catch (\Exception $e) {
-        return response()->json([
-            'success' => false,
-            'message' => 'Failed to fetch product count',
-            'error' => $e->getMessage(),
-        ], 500);
     }
-}
-
-// Get all product types for a given product
-public function getTypesByProduct($productId)
-{
-    $product = \App\Models\Product::where('id', $productId)
-        ->whereNull('deleted_at')
-        ->with(['productTypes' => function ($query) {
-            $query->whereNull('deleted_at'); // only active types
-        }])
-        ->first();
-
-    if (!$product) {
-        return response()->json(['error' => 'Product not found'], 404);
-    }
-
-    return response()->json([
-        'product_id' => $product->id,
-        'product_name' => $product->name,
-        'product_types' => $product->productTypes
-    ]);
-}
-
 }

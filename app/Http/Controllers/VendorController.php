@@ -8,6 +8,7 @@ use App\Models\ContactPerson;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Validation\Rule;
 
 class VendorController extends Controller
 {
@@ -130,24 +131,36 @@ class VendorController extends Controller
     public function VendorUpdate(Request $request, $id)
     {
 
-        $validator = Validator::make($request->all(), [
-            'vendor'   => 'required|string|max:255',
-            'gst_no'         => "nullable|string|max:50|unique:vendors,gst_no,{$id}",
-            'email'          => "nullable|email|max:255|unique:vendors,email,{$id}",
-            'pincode'        => 'nullable|digits:6',
-            'city'           => 'nullable|string|max:100',
-            'state'          => 'nullable|string|max:100',
-            'district'       => 'nullable|string|max:100',
-            'address'        => 'nullable|string',
-            'mobile_no'      => "required|max:15|unique:vendors,mobile_no,{$id}",
-            // 'alt_mobile_no'  => 'nullable|max:15',
+       $validator = Validator::make($request->all(), [
+    'vendor'   => 'required|string|max:255',
+    'gst_no'   => "nullable|string|max:50|unique:vendors,gst_no,{$id},id",
+    'email'    => "nullable|email|max:255|unique:vendors,email,{$id},id",
+    'pincode'  => 'nullable|digits:6',
+    'city'     => 'nullable|string|max:100',
+    'state'    => 'nullable|string|max:100',
+    'district' => 'nullable|string|max:100',
+    'address'  => 'nullable|string',
+    'mobile_no'=> "required|max:15|unique:vendors,mobile_no,{$id},id",
 
-            'contact_persons'               => 'nullable|array',
-            'contact_persons.*.name'        => 'required_with:contact_persons|string|max:255',
-            'contact_persons.*.designation' => 'nullable|string|max:100',
-            'contact_persons.*.mobile_no'   => 'required_with:contact_persons|max:15',
-            'contact_persons.*.email'       => 'nullable|email|max:255',
-        ]);
+    'contact_persons'               => 'nullable|array',
+    'contact_persons.*.name'        => 'required_with:contact_persons|string|max:255',
+    'contact_persons.*.designation' => 'nullable|string|max:100',
+    'contact_persons.*.mobile_no'   => [
+        'required_with:contact_persons',
+        'max:15',
+        Rule::unique('vendor_contact_person', 'mobile_no')->where(function ($q) use ($id) {
+            return $q->where('vendor_id', '!=', $id);
+        }),
+    ],
+    'contact_persons.*.email' => [
+        'nullable',
+        'email',
+        'max:255',
+        Rule::unique('vendor_contact_person', 'email')->where(function ($q) use ($id) {
+            return $q->where('vendor_id', '!=', $id);
+        }),
+    ],
+]);
 
 
         if ($validator->fails()) {
@@ -218,7 +231,7 @@ class VendorController extends Controller
         //     ->get();
 
         $vendors = DB::table('vendors')
-    ->select('id', 'vendor', 'gst_no', 'email', 'mobile_no', 'status', 'created_at')
+    ->select('id', 'vendor', 'district', 'city','email', 'mobile_no', 'created_at')
     ->whereNull('deleted_at') // ignore soft-deleted vendors
     ->orderBy('created_at', 'desc')
     ->get();

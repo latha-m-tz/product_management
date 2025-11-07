@@ -15,7 +15,7 @@ use App\Http\Controllers\ServiceVCIManagementController;
 use App\Http\Controllers\BarcodeController;
 use App\Http\Controllers\TrackingTimelineController;
 use App\Http\Controllers\TechnicianController;
-
+use App\Http\Controllers\ServiceVCIDeliveryController;
 // Route::get('/user', function (Request $request) {
 //     return $request->user();
 // })->middleware('auth:sanctum');
@@ -24,21 +24,28 @@ use App\Http\Controllers\TechnicianController;
 Route::middleware('auth:api')->get('/user', function (Request $request) {
     return $request->user();
 }); 
-
-
-
-Route::post('/login', [AuthController::class, 'login']);
+Route::post('/login', [AuthController::class, 'login'])->name('login');
+Route::get('/login', [AuthController::class, 'getLogin']);
 Route::post('/register', [AuthController::class, 'register']);
-Route::post('/logout', [AuthController::class, 'logout'])->middleware('auth:api');
 Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
 Route::post('/verify-otp', [AuthController::class, 'verifyOtp']);
 Route::post('/reset-password', [AuthController::class, 'resetPassword']);
+Route::get('/users', [AuthController::class, 'getUsers']); // public endpoint (all usernames)
+
+// ✅ Protected routes (require JWT token)
+Route::middleware(['jwt.auth'])->group(function () {
+    Route::get('/user', [AuthController::class, 'user']);
+    Route::post('/logout', [AuthController::class, 'logout']);
+    Route::get('/register', [AuthController::class, 'getUsers']);
+    Route::get('/users-protected', [AuthController::class, 'index']); // renamed to avoid confusion
+});
+
+// ✅ Optional view routes (if you use Blade)
 Route::view('/forgot-password-form', 'auth.forgot_password');
 Route::view('/reset-password-form', 'auth.reset_password');
 Route::get('/verify-otp-form', function () {
     return view('auth.verify_otp');
 });
-
 Route::prefix('product-types')->group(function () {
     Route::get('/', [ProductTypeController::class, 'index']);
     Route::get('/{id}', [ProductTypeController::class, 'show']);
@@ -46,7 +53,6 @@ Route::prefix('product-types')->group(function () {
     Route::put('/{id}', [ProductTypeController::class, 'update']);
     Route::delete('/{id}', [ProductTypeController::class, 'destroy']);
     Route::post('/link', [ProductTypeController::class, 'linkToProduct']);
-
 });
 
 Route::prefix('product')->group(function() {
@@ -95,7 +101,8 @@ Route::delete('/sparepart-purchase-items/{id}', [SparepartPurchaseController::cl
 Route::get('/sparepart-purchases/view/{id}', [SparepartPurchaseController::class, 'show']);
 Route::post('/check-sparepart-serials', [SparepartPurchaseController::class, 'checkSerials']);
 Route::get('/get-purchase', [SparepartPurchaseController::class, 'view']);
-Route::get('/counts/{series}', [SparepartPurchaseController::class, 'getSeriesSpareparts']);
+// Route::get('/counts/{series}', [SparepartPurchaseController::class, 'getSeriesSpareparts']);
+Route::get('/products/series/{series}', [SparepartPurchaseController::class, 'getSeriesSpareparts']);
 Route::get('/vci-capacity', [SparepartPurchaseController::class, 'components']);
 Route::get('/product-types/product/{id}', [ProductTypeController::class, 'getProduct']);
 Route::delete('/purchase-items/{purchaseId}/{itemId}', [SparepartPurchaseController::class, 'deleteItem']);
@@ -103,10 +110,10 @@ Route::delete('/purchase-items/{purchaseId}/{itemId}', [SparepartPurchaseControl
 
 Route::get('/inventory/serial-numbers', [InventoryController::class, 'serialNumbers']);
 Route::prefix('inventory')->group(function () {
-    Route::get('/show', [InventoryController::class, 'getAllItems']);
-       Route::get('/serialrange/{from_serial}/{to_serial}', [InventoryController::class, 'serialrangeItems']);
+Route::get('/show', [InventoryController::class, 'getAllItems']);
+Route::get('/serialrange/{from_serial}/{to_serial}', [InventoryController::class, 'serialrangeItems']);
 Route::put('/serialrange/{from_serial}/{to_serial}', [InventoryController::class, 'updateSerialRange']);
-    Route::get('/serialranges', [InventoryController::class, 'serialRanges']);
+Route::get('/serialranges', [InventoryController::class, 'serialRanges']);
 Route::delete('/serialrange/{from_serial}/{to_serial}', [InventoryController::class, 'deleteSerialRange']);
     Route::get('/', [InventoryController::class, 'index']);
     Route::get('/{id}', [InventoryController::class, 'show']);
@@ -117,6 +124,9 @@ Route::delete('/serialrange/{from_serial}/{to_serial}', [InventoryController::cl
     Route::get('/missing-serials/{from_serial}/{to_serial}', [InventoryController::class, 'getMissingSerials']);
 
 });
+Route::post('/check-serials-purchased', [InventoryController::class, 'checkSerialsPurchased']);
+Route::get('/inventory/serial/{serial_no}', [InventoryController::class, 'getSerialDetails']);
+Route::delete('/inventory/{id}', [InventoryController::class, 'destroy']);
 
 
 //Sales
@@ -142,3 +152,15 @@ Route::delete('/purchase-items/{purchase_id}/{sparepart_id}', [SparepartControll
 Route::get('/sales/serials/{productId}', [SalesController::class, 'getSaleSerials']);
 Route::get('/products/{productId}/serials', [SalesController::class, 'getProductSerials']);
 Route::apiResource('technicians', TechnicianController::class);
+
+
+
+
+Route::prefix('service-deliveries')->group(function () {
+    Route::get('/', [ServiceVCIDeliveryController::class, 'index']);
+    Route::get('/eligible', [ServiceVCIDeliveryController::class, 'eligibleItems']);
+    Route::post('/', [ServiceVCIDeliveryController::class, 'store']);
+    Route::get('/{id}', [ServiceVCIDeliveryController::class, 'show']);
+    Route::put('/{id}', [ServiceVCIDeliveryController::class, 'update']);
+    Route::delete('/{id}', [ServiceVCIDeliveryController::class, 'destroy']);
+});
