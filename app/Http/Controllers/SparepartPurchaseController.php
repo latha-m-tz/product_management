@@ -17,15 +17,15 @@ use Illuminate\Validation\Rule;
 class SparepartPurchaseController extends Controller
 {
 
-
 public function store(Request $request)
 {
     $request->validate([
         'vendor_id' => 'required|integer|exists:vendors,id',
         'challan_no' => 'required|string|max:50|unique:sparepart_purchase,challan_no',
         'tracking_number' => 'nullable|string|max:100',
-        'challan_date' => ['required', 'date_format:d-m-Y', 'before_or_equal:today'],
-        'received_date' => ['required', 'date_format:d-m-Y', 'before_or_equal:today'],
+        'challan_date' => ['required','before_or_equal:today'],
+        'received_date' => ['required','before_or_equal:today'],
+        'courier_name' => 'nullable|string|max:100',
         'items' => 'required|array|min:1',
         'items.*.product_id' => 'nullable|integer|exists:product,id',
         'items.*.sparepart_id' => 'nullable|integer|exists:spareparts,id',
@@ -34,72 +34,112 @@ public function store(Request $request)
         'items.*.serial_no' => 'nullable|string|max:100',
         'items.*.from_serial' => ['nullable', 'regex:/^\d{1,6}$/'],
         'items.*.to_serial' => ['nullable', 'regex:/^\d{1,6}$/'],
-        'image_recipient.*' => 'nullable|image|mimes:jpg,jpeg,png,gif|max:2048',
-        'image_challan.*' => 'nullable|image|mimes:jpg,jpeg,png,gif|max:2048',
+            'document_recipient.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:2048',
     ]);
-
+ 
     DB::beginTransaction();
-
+ 
     try {
         $recipientFiles = [];
         $challanFiles = [];
-
-        if ($request->hasFile('image_recipient')) {
-            foreach ($request->file('image_recipient') as $file) {
+ 
+        // Handle recipient documents
+        if ($request->hasFile('document_recipient')) {
+            foreach ($request->file('document_recipient') as $file) {
                 $filename = time() . '_' . uniqid() . '_' . $file->getClientOriginalName();
-                $file->storeAs('sparepart_images/recipients', $filename, 'public');
-                $recipientFiles[] = 'storage/sparepart_images/recipients/' . $filename;
+                $file->move(public_path('sparepart_images/recipients'), $filename);
+                $recipientFiles[] = 'sparepart_images/recipients/' . $filename;
             }
         }
-
-        if ($request->hasFile('image_challan')) {
-            foreach ($request->file('image_challan') as $file) {
-                $filename = time() . '_' . uniqid() . '_' . $file->getClientOriginalName();
-                $file->storeAs('sparepart_images/challans', $filename, 'public');
-                $challanFiles[] = 'storage/sparepart_images/challans/' . $filename;
-            }
-        }
-
+ 
+        // Handle challan documents
+        // if ($request->hasFile('document_challan')) {
+        //     foreach ($request->file('document_challan') as $file) {
+        //         $filename = time() . '_' . uniqid() . '_' . $file->getClientOriginalName();
+        //         $file->move(public_path('sparepart_images/challans'), $filename);
+        //         $challanFiles[] = 'sparepart_images/challans/' . $filename;
+        //     }
+        // }
+ 
+        // Create the main purchase
         $purchase = SparepartPurchase::create([
             'vendor_id' => $request->vendor_id,
             'challan_no' => $request->challan_no,
             'tracking_number' => $request->tracking_number,
-            'challan_date' => Carbon::createFromFormat('d-m-Y', $request->challan_date)->format('Y-m-d'),
-            'received_date' => Carbon::createFromFormat('d-m-Y', $request->received_date)->format('Y-m-d'),
-            'document_recipient' => $recipientFiles,
-            'document_challan' => $challanFiles,
+            'challan_date' => $request->challan_date,
+            'received_date' => $request->received_date,
+            'courier_name' => $request->courier_name,
+          'document_recipient' => $recipientFiles,
+ 
             'created_by' => auth()->id(),
         ]);
-
+ 
+        $serialsToInsert = [];
+ 
         foreach ($request->items as $item) {
-            SparepartPurchaseItem::create([
-                'purchase_id' => $purchase->id,
-                'product_id' => $item['product_id'] ?? null,
-                'sparepart_id' => $item['sparepart_id'],
-                'quantity' => $item['quantity'],
-                'warranty_status' => $item['warranty_status'] ?? null,
-                'serial_no' => $item['serial_no'] ?? null,
-                'from_serial' => $item['from_serial'] ?? null,
-                'to_serial' => $item['to_serial'] ?? null,
-                'created_by' => auth()->id(),
-            ]);
+            $from = $item['from_serial'] ?? null;
+            $to = $item['to_serial'] ?? null;
+ 
+            if ($from && $to) {
+                for ($i = $from; $i <= $to; $i++) {
+                    $serialsToInsert[] = [
+                        'purchase_id' => $purchase->id,
+                        'product_id' => $item['product_id'] ?? null,
+                        'sparepart_id' => $item['sparepart_id'] ?? null,
+                        'quantity' => 1,
+                        'warranty_status' => $item['warranty_status'] ?? null,
+                        'serial_no' => $i,
+                        'created_by' => auth()->id(),
+                    ];
+                }
+            } else {
+                $serialsToInsert[] = [
+                    'purchase_id' => $purchase->id,
+                    'product_id' => $item['product_id'] ?? null,
+                    'sparepart_id' => $item['sparepart_id'] ?? null,
+                    'quantity' => $item['quantity'],
+                    'warranty_status' => $item['warranty_status'] ?? null,
+                    'serial_no' => $item['serial_no'] ?? null,
+                    'created_by' => auth()->id(),
+                ];
+            }
         }
-
+ 
+        // Check for duplicates in DB
+        $serialNumbers = array_map(fn($s) => $s['serial_no'], $serialsToInsert);
+        $duplicateSerials = SparepartPurchaseItem::whereIn('serial_no', $serialNumbers)->pluck('serial_no')->toArray();
+ 
+        if (!empty($duplicateSerials)) {
+            DB::rollBack();
+            return response()->json([
+                'message' => 'Duplicate serial numbers found',
+                'duplicates' => $duplicateSerials,
+            ], 422);
+        }
+ 
+        // Insert all items
+        foreach ($serialsToInsert as $item) {
+            SparepartPurchaseItem::create($item);
+        }
+ 
         DB::commit();
-
+ 
         return response()->json([
             'message' => 'Spare part purchase saved successfully',
             'purchase_id' => $purchase->id,
             'tracking_number' => $purchase->tracking_number,
             'documents' => [
                 'recipients' => $recipientFiles,
-                'challans' => $challanFiles,
+                // 'challans' => $challanFiles,
             ],
         ], 201);
-
+ 
     } catch (\Throwable $e) {
         DB::rollBack();
-        return response()->json(['message' => 'Error saving purchase', 'error' => $e->getMessage()], 500);
+        return response()->json([
+            'message' => 'Error saving purchase',
+            'error' => $e->getMessage(),
+        ], 500);
     }
 }
 
@@ -177,7 +217,7 @@ public function index(Request $request)
             'items' => $items->map(function ($item) {
                 return [
                     'item_id'        => $item->item_id,
-                    'product_id'     => $item->product_id,
+                    // 'product_id'     => $item->product_id,
                     'product_name'   => $item->product_name,
                     'sparepart_id'   => $item->sparepart_id,
                     'sparepart_name' => $item->sparepart_name,
@@ -195,29 +235,32 @@ public function edit($id)
 {
     $purchase = SparepartPurchase::with(['items.product', 'items.sparepart', 'vendor'])
         ->findOrFail($id);
-
+ 
     $response = [
         'id' => $purchase->id,
         'vendor_id' => $purchase->vendor_id,
         'vendor_name' => $purchase->vendor->vendor ?? null,
         'challan_no' => $purchase->challan_no,
         'tracking_number' => $purchase->tracking_number,
+        'courier_name' => $purchase->courier_name,
         'challan_date' => $purchase->challan_date ? \Carbon\Carbon::parse($purchase->challan_date)->format('d-m-Y') : null,
         'received_date' => $purchase->received_date ? \Carbon\Carbon::parse($purchase->received_date)->format('d-m-Y') : null,
-
-        // Decode JSON arrays for multi-file support
-        'document_recipient' => $purchase->document_recipient 
-            ? json_decode($purchase->document_recipient, true) 
-            : [],
-        'document_challan' => $purchase->document_challan 
-            ? json_decode($purchase->document_challan, true) 
-            : [],
-
+        'courier_name' => $purchase->courier_name,
+ 
+    'document_recipient' => is_string($purchase->document_recipient)
+        ? json_decode($purchase->document_recipient, true)
+        : ($purchase->document_recipient ?? []),
+ 
+    // 'document_challan' => is_string($purchase->document_challan)
+    //     ? json_decode($purchase->document_challan, true)
+    //     : ($purchase->document_challan ?? []),
+ 
+ 
         // Fetch items with related product and sparepart info
         'items' => $purchase->items->map(function ($item) {
             return [
                 'id' => $item->id,
-                'product_id' => $item->product_id,
+                // 'product_id' => $item->product_id,
                 'product_name' => $item->product->name ?? null,
                 'sparepart_id' => $item->sparepart_id,
                 'sparepart_name' => $item->sparepart->name ?? null,
@@ -229,7 +272,7 @@ public function edit($id)
             ];
         })->values(),
     ];
-
+ 
     return response()->json($response);
 }
 
@@ -237,7 +280,7 @@ public function edit($id)
 public function update(Request $request, $id)
 {
     $purchase = SparepartPurchase::findOrFail($id);
-
+ 
     $request->validate([
         'vendor_id' => 'required|integer|exists:vendors,id',
         'challan_no' => [
@@ -249,93 +292,175 @@ public function update(Request $request, $id)
         'tracking_number' => 'nullable|string|max:100',
         'challan_date' => ['required', 'date_format:Y-m-d', 'before_or_equal:today'],
         'received_date' => ['required', 'date_format:Y-m-d', 'before_or_equal:today'],
+        'courier_name' => 'nullable|string|max:100',
         'items' => 'nullable|array|min:1',
-        'items.*.product_id' => 'nullable|integer|exists:product,id',
+        'items.*.id' => 'nullable|integer',
+        // 'items.*.product_id' => 'nullable|integer|exists:product,id',
         'items.*.sparepart_id' => 'nullable|integer|exists:spareparts,id',
         'items.*.quantity' => 'required|integer|min:1',
         'items.*.warranty_status' => 'nullable|string|max:50',
-        'items.*.serial_no' => 'nullable|string|max:100',
+        'items.*.serials' => 'nullable|array',
         'deleted_ids' => 'nullable|array',
         'deleted_ids.*' => 'integer|exists:sparepart_purchase_items,id',
-        'image_recipient.*' => 'nullable|image|mimes:jpg,jpeg,png,gif|max:2048',
-        'image_challan.*' => 'nullable|image|mimes:jpg,jpeg,png,gif|max:2048',
+        'document_recipient' => 'nullable|array',
+        'document_recipient.*' => 'file|mimes:jpg,jpeg,png,pdf|max:2048',
+        'document_challan' => 'nullable|array',
+'document_challan.*' => 'file|mimes:jpg,jpeg,png,pdf|max:2048', // max 10 MB per file
     ]);
-
+ 
     DB::beginTransaction();
-
+ 
     try {
-        // ✅ Already arrays (because of $casts)
-        $recipientFiles = $purchase->document_recipient ?? [];
-        $challanFiles = $purchase->document_challan ?? [];
 
-        // ✅ Handle recipient images
-        if ($request->hasFile('image_recipient')) {
-            foreach ($request->file('image_recipient') as $file) {
-                $filename = time() . '_' . uniqid() . '_' . $file->getClientOriginalName();
-                $file->storeAs('sparepart_images/recipients', $filename, 'public');
-                $recipientFiles[] = 'storage/sparepart_images/recipients/' . $filename;
-            }
-        }
+$recipientFiles = $purchase->document_recipient ?? [];
+$challanFiles = $purchase->document_challan ?? [];
+ 
+if ($request->filled('removed_recipient_files')) {
+    $removedRecipientFiles = json_decode($request->removed_recipient_files, true);
+ 
+    $recipientFiles = array_values(array_diff($recipientFiles, $removedRecipientFiles));
+}
+ 
+if ($request->filled('removed_recipient_files')) {
+    $removedRecipientFiles = json_decode($request->removed_recipient_files, true);
+    $recipientFiles = array_values(array_diff($recipientFiles, $removedRecipientFiles));
+}
+ 
 
-        // ✅ Handle challan images
-        if ($request->hasFile('image_challan')) {
-            foreach ($request->file('image_challan') as $file) {
-                $filename = time() . '_' . uniqid() . '_' . $file->getClientOriginalName();
-                $file->storeAs('sparepart_images/challans', $filename, 'public');
-                $challanFiles[] = 'storage/sparepart_images/challans/' . $filename;
-            }
-        }
-
+ 
+// ✅ Handle new recipient documents (keep old + add new)
+if ($request->hasFile('document_recipient')) {
+    foreach ($request->file('document_recipient') as $file) {
+        $filename = time() . '_' . uniqid() . '_' . $file->getClientOriginalName();
+        $file->move(public_path('sparepart_images/recipients'), $filename);
+        $recipientFiles[] = 'sparepart_images/recipients/' . $filename;
+    }
+}
+ 
+// // ✅ Handle new challan documents (keep old + add new)
+// if ($request->hasFile('document_challan')) {
+//     foreach ($request->file('document_challan') as $file) {
+//         $filename = time() . '_' . uniqid() . '_' . $file->getClientOriginalName();
+//         $file->move(public_path('sparepart_images/challans'), $filename);
+//         $challanFiles[] = 'sparepart_images/challans/' . $filename;
+//     }
+// }
+ 
         $purchase->update([
             'vendor_id' => $request->vendor_id,
             'challan_no' => $request->challan_no,
             'tracking_number' => $request->tracking_number,
             'challan_date' => Carbon::createFromFormat('Y-m-d', $request->challan_date)->format('Y-m-d'),
             'received_date' => Carbon::createFromFormat('Y-m-d', $request->received_date)->format('Y-m-d'),
+            'courier_name' => $request->courier_name,
             'document_recipient' => $recipientFiles,
-            'document_challan' => $challanFiles,
             'updated_by' => auth()->id(),
         ]);
-
+ 
         if (!empty($request->deleted_ids)) {
             SparepartPurchaseItem::whereIn('id', $request->deleted_ids)->delete();
         }
-
+ 
+        $totalQuantity = 0;
+ 
         foreach ($request->items ?? [] as $item) {
-            if (!empty($item['id'])) {
-                SparepartPurchaseItem::where('id', $item['id'])->update([
-                    'product_id' => $item['product_id'] ?? null,
-                    'sparepart_id' => $item['sparepart_id'],
-                    'quantity' => $item['quantity'],
-                    'warranty_status' => $item['warranty_status'] ?? null,
-                    'serial_no' => $item['serial_no'] ?? null,
-                    'updated_by' => auth()->id(),
-                ]);
+            $serials = $item['serials'] ?? [];
+            $serials = array_filter($serials); // remove empty strings
+ 
+            // Check duplicates in request
+            $duplicateInRequest = collect($serials)->duplicates()->all();
+            if (!empty($duplicateInRequest)) {
+                return response()->json([
+                    'errors' => ['items' => ['Duplicate serial(s) in request: ' . implode(', ', $duplicateInRequest)]]
+                ], 422);
+            }
+ 
+            // Check duplicates in DB excluding current purchase
+            if (count($serials) > 0) {
+                $existingSerials = SparepartPurchaseItem::whereIn('serial_no', $serials)
+                    ->where('purchase_id', '!=', $purchase->id)
+                    ->pluck('serial_no')
+                    ->toArray();
+ 
+                if (!empty($existingSerials)) {
+                    return response()->json([
+                        'errors' => ['items' => ['Serial(s) already exist in DB: ' . implode(', ', $existingSerials)]]
+                    ], 422);
+                }
+            }
+ 
+            SparepartPurchaseItem::where('purchase_id', $purchase->id)
+                ->where('sparepart_id', $item['sparepart_id'])
+                // ->when($item['product_id'], fn($q) => $q->where('product_id', $item['product_id']))
+                ->whereNotIn('serial_no', $serials)
+                ->delete();
+ 
+            if (count($serials) > 0) {
+                foreach ($serials as $serial) {
+                    SparepartPurchaseItem::updateOrCreate(
+                        [
+                            'purchase_id' => $purchase->id,
+                            'sparepart_id' => $item['sparepart_id'],
+                            // 'product_id' => $item['product_id'] ?? null,
+                            'serial_no' => $serial,
+                        ],
+                        [
+                            'quantity' => 1,
+                            'warranty_status' => $item['warranty_status'] ?? null,
+                            'updated_by' => auth()->id(),
+                        ]
+                    );
+                }
+                $totalQuantity += count($serials);
             } else {
-                SparepartPurchaseItem::create([
-                    'purchase_id' => $purchase->id,
-                    'product_id' => $item['product_id'] ?? null,
-                    'sparepart_id' => $item['sparepart_id'],
-                    'quantity' => $item['quantity'],
-                    'warranty_status' => $item['warranty_status'] ?? null,
-                    'serial_no' => $item['serial_no'] ?? null,
-                    'created_by' => auth()->id(),
-                ]);
+                SparepartPurchaseItem::updateOrCreate(
+                    [
+                        'purchase_id' => $purchase->id,
+                        'sparepart_id' => $item['sparepart_id'],
+                        'product_id' => $item['product_id'] ?? null,
+                        'serial_no' => null,
+                    ],
+                    [
+                        'quantity' => $item['quantity'] ?? 0,
+                        'warranty_status' => $item['warranty_status'] ?? null,
+                        'updated_by' => auth()->id(),
+                    ]
+                );
+                $totalQuantity += $item['quantity'] ?? 0;
             }
         }
-
+ 
+        $purchase->update(['quantity' => $totalQuantity]);
+ 
+     
+        $purchase->load('items.sparepart', 'items.product');
+ 
+        $purchaseItems = $purchase->items
+            ->groupBy(fn($item) => $item->sparepart_id . '_' . ($item->product_id ?? 'null'))
+            ->map(fn($group) => [
+                'id' => $group->first()->id,
+                'sparepart_id' => $group->first()->sparepart_id,
+                // 'product_id' => $group->first()->product_id,
+                'qty' => $group->pluck('serial_no')->filter()->count() ?: $group->first()->quantity,
+                'warranty_status' => $group->first()->warranty_status,
+                'from_serial' => $group->pluck('serial_no')->filter()->sort()->values()->first() ?? null,
+                'to_serial' => $group->pluck('serial_no')->filter()->sort()->values()->last() ?? null,
+                'serials' => $group->pluck('serial_no')->filter()->sort()->values()->toArray(),
+            ])->values();
+ 
         DB::commit();
-
+ 
         return response()->json([
             'message' => 'Spare part purchase updated successfully',
-            'purchase_id' => $purchase->id,
-            'tracking_number' => $purchase->tracking_number,
+            // 'purchase_id' => $purchase->id,
+            'quantity' => $totalQuantity,
+            'items' => $purchaseItems,
             'documents' => [
                 'recipients' => $recipientFiles,
-                'challans' => $challanFiles,
+                // 'challans' => $challanFiles,
             ],
         ], 200);
-
+ 
     } catch (\Throwable $e) {
         DB::rollBack();
         return response()->json(['message' => 'Update failed', 'error' => $e->getMessage()], 500);
@@ -358,7 +483,7 @@ public function destroy($id)
 
 public function availableSerials(Request $request)
 {
-    $purchaseId  = $request->query('purchase_id');   // 👈 add this
+    $purchaseId  = $request->query('purchase_id');   
     $sparepartId = $request->query('sparepart_id');
     $productId   = $request->query('product_id');
 
@@ -367,7 +492,7 @@ public function availableSerials(Request $request)
         ->where('product_id', $productId);
 
     if ($purchaseId) {
-        $query->where('purchase_id', $purchaseId);  // 👈 filter correctly
+        $query->where('purchase_id', $purchaseId);  
     }
 
     $serials = $query->orderBy('serial_no', 'asc')
@@ -395,11 +520,10 @@ public function show($id)
         'vendor' => $purchase->vendor->vendor ?? null,
         'challan_no' => $purchase->challan_no,
         'challan_date' => $purchase->challan_date,
-        'received_date' => $purchase->received_date, // <-- add received date
-        'total_quantity' => $totalQuantity,
-        'document_recipient' => $purchase->document_recipient, // <-- add document fields
-        'document_challan_1' => $purchase->document_challan_1,
-        'document_challan_2' => $purchase->document_challan_2,
+        'received_date' => $purchase->received_date, 
+        'tracking_number' => $purchase->tracking_number,
+        'courier_name' => $purchase->courier_name,
+        'document_recipient' => $purchase->document_recipient,
         'items' => $purchase->items->map(function ($item) {
             return [
                 'id' => $item->id,
@@ -555,67 +679,138 @@ public function getAllSeriesCounts()
 }
 
 
+// public function getSeriesSpareparts($series)
+// {
+//     $allSpareparts = Sparepart::all();
+
+//     // Extract series core name: e.g., "7-series" from "vci(7-series)"
+//     $seriesNameCore = preg_replace('/.*\((.*)\)/', '$1', $series);
+
+//     // Get common spare parts
+//     $commonParts = $allSpareparts->filter(fn($part) => $part->sparepart_usages && stripos($part->sparepart_usages, 'common') !== false);
+
+//     // Get series-specific spare parts
+//     $seriesParts = $allSpareparts->filter(fn($part) => $part->sparepart_usages && stripos($part->sparepart_usages, $seriesNameCore) !== false);
+
+//     // Merge both
+//     $partsToProcess = $commonParts->merge($seriesParts);
+
+//     // Count assembled VCIs from inventory (not deleted)
+//     $seriesPrefix = substr($seriesNameCore, 0, 1);
+//     $assembledVCIs = \DB::table('inventory')
+//         ->whereNull('deleted_by')
+//         ->where('serial_no', 'LIKE', $seriesPrefix . '%')
+//         ->count();
+
+//     $parts = $partsToProcess->map(function ($part) use ($seriesNameCore, $assembledVCIs) {
+
+//         // Total purchased quantity from sparepart_purchase_items
+//         $purchasedQty = \DB::table('sparepart_purchase_items as spi')
+//             ->where('spi.sparepart_id', $part->id)
+//             ->sum('spi.quantity');
+
+//         // Used quantity = assembled VCIs * required_per_vci
+//         $requiredPerVCI = $part->required_per_vci ?? 1;
+//         $usedQty = $assembledVCIs * $requiredPerVCI;
+
+//         // Available quantity = purchased - used
+//         $availableQty = max($purchasedQty - $usedQty, 0);
+
+//         // Boards possible = how many more VCIs we can assemble with available quantity
+//         $boardsPossible = $requiredPerVCI > 0 ? intdiv($availableQty, $requiredPerVCI) : 0;
+
+//         return [
+//             'id' => $part->id,
+//             'name' => $part->name,
+//             'purchased_quantity' => $purchasedQty,
+//             'used_quantity' => $usedQty,
+//             'available_quantity' => $availableQty,
+//             'required_per_vci' => $requiredPerVCI,
+//             'boards_possible' => $boardsPossible,
+//             'sparepart_usages' => $part->sparepart_usages,
+//         ];
+//     });
+
+//     return response()->json([
+//         'series' => $series,
+//         'spare_parts' => $parts->values(),
+//         'max_vci_possible' => $parts->min('boards_possible'),
+//         'shortages' => $parts->filter(fn($p) => $p['boards_possible'] === 0)->values(),
+//     ]);
+// }
+
+
+
 public function getSeriesSpareparts($series)
 {
-    $allSpareparts = Sparepart::all();
+    // Decode if frontend sends URL-encoded value like vci%285-series%29
+    $series = urldecode($series);
 
-    // Extract series core name: e.g., "7-series" from "vci(7-series)"
-    $seriesNameCore = preg_replace('/.*\((.*)\)/', '$1', $series);
+    // Remove the product type in parentheses if present
+    if (preg_match('/^(.*)\((.*)\)$/', $series, $matches)) {
+        $series = trim($matches[1]); // Take only the name before parentheses
+    }
 
-    // Get common spare parts
-    $commonParts = $allSpareparts->filter(fn($part) => $part->sparepart_usages && stripos($part->sparepart_usages, 'common') !== false);
+    // Try to find the product by its name
+    $product = Product::where('name', $series)
+        ->whereNull('deleted_at')
+        ->with('productTypes')
+        ->first();
 
-    // Get series-specific spare parts
-    $seriesParts = $allSpareparts->filter(fn($part) => $part->sparepart_usages && stripos($part->sparepart_usages, $seriesNameCore) !== false);
+    if (!$product) {
+        return response()->json(['message' => "Product '{$series}' not found"], 404);
+    }
 
-    // Merge both
-    $partsToProcess = $commonParts->merge($seriesParts);
+    // Get sparepart requirements JSON (array of {id, required_quantity})
+    $sparepartRequirements = $product->sparepart_requirements ?? [];
 
-    // Count assembled VCIs from inventory (not deleted)
-    $seriesPrefix = substr($seriesNameCore, 0, 1);
-    $assembledVCIs = \DB::table('inventory')
+    if (empty($sparepartRequirements)) {
+        return response()->json([
+            'product' => $product->name,
+            'spare_parts' => [],
+            'message' => 'No sparepart requirements found for this product.',
+        ]);
+    }
+
+    // Fetch spareparts by IDs
+    $sparepartIds = collect($sparepartRequirements)->pluck('id')->toArray();
+    $spareparts = Sparepart::whereIn('id', $sparepartIds)->get();
+
+    // Count all assembled VCIs (for usage calculation)
+    $assembledVCIs = DB::table('inventory')
         ->whereNull('deleted_by')
-        ->where('serial_no', 'LIKE', $seriesPrefix . '%')
         ->count();
 
-    $parts = $partsToProcess->map(function ($part) use ($seriesNameCore, $assembledVCIs) {
+    // Map spareparts with quantities
+    $sparepartsMapped = $spareparts->map(function ($part) use ($sparepartRequirements, $assembledVCIs) {
+        $requiredPerProduct = collect($sparepartRequirements)
+            ->firstWhere('id', $part->id)['required_quantity'] ?? 0;
 
-        // Total purchased quantity from sparepart_purchase_items
-        $purchasedQty = \DB::table('sparepart_purchase_items as spi')
-            ->where('spi.sparepart_id', $part->id)
-            ->sum('spi.quantity');
+        $purchasedQty = DB::table('sparepart_purchase_items')
+            ->where('sparepart_id', $part->id)
+            ->sum('quantity');
 
-        // Used quantity = assembled VCIs * required_per_vci
-        $requiredPerVCI = $part->required_per_vci ?? 1;
-        $usedQty = $assembledVCIs * $requiredPerVCI;
-
-        // Available quantity = purchased - used
+        $usedQty = $assembledVCIs * $requiredPerProduct;
         $availableQty = max($purchasedQty - $usedQty, 0);
-
-        // Boards possible = how many more VCIs we can assemble with available quantity
-        $boardsPossible = $requiredPerVCI > 0 ? intdiv($availableQty, $requiredPerVCI) : 0;
 
         return [
             'id' => $part->id,
+            'code' => $part->code,
             'name' => $part->name,
+            'sparepart_type' => $part->sparepart_type,
+            'sparepart_usages' => $part->sparepart_usages,
+            'required_per_vci' => $requiredPerProduct,
             'purchased_quantity' => $purchasedQty,
             'used_quantity' => $usedQty,
             'available_quantity' => $availableQty,
-            'required_per_vci' => $requiredPerVCI,
-            'boards_possible' => $boardsPossible,
-            'sparepart_usages' => $part->sparepart_usages,
         ];
     });
 
     return response()->json([
-        'series' => $series,
-        'spare_parts' => $parts->values(),
-        'max_vci_possible' => $parts->min('boards_possible'),
-        'shortages' => $parts->filter(fn($p) => $p['boards_possible'] === 0)->values(),
+        'series' => $product->name,
+        'spare_parts' => $sparepartsMapped,
     ]);
 }
-
-
 
 
 }

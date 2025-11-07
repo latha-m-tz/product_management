@@ -20,7 +20,7 @@ class SparepartController extends Controller
 {
     $validated = $request->validate([
         'code' => [
-            'required',
+            'nullable',
             'string',
             'max:50',
             Rule::unique('spareparts', 'code'),
@@ -99,7 +99,7 @@ class SparepartController extends Controller
         // Validate fields
       $validated = $request->validate([
     'code' => [
-        'required',
+        'nullable',
         'string',
         'max:50',
         Rule::unique('spareparts', 'code')->ignore($id),
@@ -178,39 +178,50 @@ $sparepart->update($validated);
      */
 public function index()
 {
-    $spareparts = Sparepart::all();
+    // Fetch all spareparts once
+    $spareparts = \App\Models\Sparepart::all();
 
+    // Map and compute available quantities
     $sparepartsWithAvailableQty = $spareparts->map(function ($part) {
-        // Total purchased quantity
+        // ✅ Total purchased quantity
         $purchasedQty = \DB::table('sparepart_purchase_items')
             ->where('sparepart_id', $part->id)
             ->sum('quantity');
 
-        // Total assembled VCIs
+        // ✅ Total assembled VCIs (active ones)
         $assembledVCIs = \DB::table('inventory')
             ->whereNull('deleted_by')
             ->count();
 
-        // Required per VCI (default 1 if null)
+        // ✅ Required per VCI (default = 1 if null)
         $requiredPerVCI = $part->required_per_vci ?? 1;
 
-        // Used quantity
+        // ✅ Used quantity = assembled count * required per VCI
         $usedQty = $assembledVCIs * $requiredPerVCI;
 
-        // Available quantity = purchased - used
+        // ✅ Available quantity = purchased - used (never negative)
         $availableQty = max($purchasedQty - $usedQty, 0);
 
+        // ✅ Return all important fields
         return [
             'id' => $part->id,
+            'code' => $part->code,
             'name' => $part->name,
+            'sparepart_type' => $part->sparepart_type,
+            'sparepart_usages' => $part->sparepart_usages,
+            'required_per_vci' => $part->required_per_vci,
             'available_quantity' => $availableQty,
+            'created_at' => $part->created_at,
+            'updated_at' => $part->updated_at,
         ];
     });
 
+    // ✅ Send response back to frontend
     return response()->json([
         'spareparts' => $sparepartsWithAvailableQty->values(),
     ], 200);
 }
+
 
     /**
      * Delete sparepart from purchase items.

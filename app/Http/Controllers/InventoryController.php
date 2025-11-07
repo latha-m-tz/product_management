@@ -102,14 +102,14 @@ public function store(Request $request)
                     }
                 },
             ],
-            'product_type_id' => [
-                'required', 'integer',
-                function ($attribute, $value, $fail) {
-                    if (!\App\Models\ProductType::where('id', $value)->whereNull('deleted_at')->exists()) {
-                        $fail("Invalid product type.");
-                    }
-                },
-            ],
+            // 'product_type_id' => [
+            //     'required', 'integer',
+            //     function ($attribute, $value, $fail) {
+            //         if (!\App\Models\ProductType::where('id', $value)->whereNull('deleted_at')->exists()) {
+            //             $fail("Invalid product type.");
+            //         }
+            //     },
+            // ],
             'firmware_version' => 'nullable|string|max:100',
             'tested_date'      => 'nullable|date',
             'items'            => 'required|array|min:1',
@@ -117,22 +117,45 @@ public function store(Request $request)
             'items.*.tested_by'    => 'nullable|string|max:100',
             'items.*.tested_status'=> 'nullable|string',
             'items.*.test_remarks' => 'nullable|string|max:255',
-            'items.*.from_serial'  => 'nullable|string|max:100',
-            'items.*.to_serial'    => 'nullable|string|max:100',
-            'items.*.quantity'     => 'nullable|integer|min:1',
             'items.*.tested_date'  => 'nullable|date',
         ]);
 
         $userId = Auth::id() ?? 1;
         $results = [];
 
+        // Extract numeric serials and sort
+        $serialNumbers = collect($validated['items'])
+            ->pluck('serial_no')
+            ->map(fn($s) => (int)preg_replace('/\D/', '', $s))
+            ->sort()
+            ->values();
+
+        if ($serialNumbers->isEmpty()) {
+            return response()->json(['message' => 'No valid serial numbers found.'], 422);
+        }
+
+        $fromSerial = str_pad($serialNumbers->first(), 6, '0', STR_PAD_LEFT);
+        $toSerial   = str_pad($serialNumbers->last(), 6, '0', STR_PAD_LEFT);
+
+        // Detect if serials are consecutive
+        $isConsecutive = true;
+        for ($i = 1; $i < count($serialNumbers); $i++) {
+            if ($serialNumbers[$i] !== $serialNumbers[$i - 1] + 1) {
+                $isConsecutive = false;
+                break;
+            }
+        }
+
+        // If consecutive, use numeric range count; else, just number of entered serials
+        $quantity = $isConsecutive
+            ? ($serialNumbers->last() - $serialNumbers->first() + 1)
+            : count($serialNumbers);
+
         foreach ($validated['items'] as $item) {
             $serial = $item['serial_no'];
 
-            // 1️⃣ Check if serial is purchased for this product
-            $isPurchased = \App\Models\SparepartPurchaseItem::where('product_id', $validated['product_id'])
-                ->where('serial_no', $serial)
-                ->exists();
+$isPurchased = \App\Models\SparepartPurchaseItem::where('serial_no', $serial)
+    ->exists();
 
             if (!$isPurchased) {
                 $results[] = [
@@ -140,13 +163,13 @@ public function store(Request $request)
                     'status' => 'not_purchased',
                     'message' => 'This serial is not purchased for the selected product.',
                 ];
-                continue; // Skip adding to inventory
+                continue;
             }
 
-            // 2️⃣ Skip if marked deleted
+            // ✅ Skip if deleted
             $isDeletedSerial = \App\Models\DeletedSerial::where('serial_no', $serial)
                 ->where('product_id', $validated['product_id'])
-                ->where('product_type_id', $validated['product_type_id'])
+                // ->where('product_type_id', $validated['product_type_id'])
                 ->exists();
 
             if ($isDeletedSerial) {
@@ -158,9 +181,9 @@ public function store(Request $request)
                 continue;
             }
 
-            // 3️⃣ Skip if already in inventory
+            // ✅ Skip if already exists
             $exists = \App\Models\Inventory::where('product_id', $validated['product_id'])
-                ->where('product_type_id', $validated['product_type_id'])
+                // ->where('product_type_id', $validated['product_type_id'])
                 ->where('serial_no', $serial)
                 ->whereNull('deleted_at')
                 ->exists();
@@ -174,19 +197,19 @@ public function store(Request $request)
                 continue;
             }
 
-            // 4️⃣ Add to inventory
-            $inventory = \App\Models\Inventory::create([
+            // ✅ Add each serial
+            \App\Models\Inventory::create([
                 'product_id'       => $validated['product_id'],
-                'product_type_id'  => $validated['product_type_id'],
+                // 'product_type_id'  => $validated['product_type_id'],
                 'firmware_version' => $validated['firmware_version'] ?? null,
                 'tested_date'      => $item['tested_date'] ?? $validated['tested_date'] ?? null,
                 'serial_no'        => $serial,
                 'tested_by'        => $item['tested_by'] ?? null,
                 'tested_status'    => $item['tested_status'] ?? 'PASS',
                 'test_remarks'     => $item['test_remarks'] ?? null,
-                'from_serial'      => $item['from_serial'] ?? $serial,
-                'to_serial'        => $item['to_serial'] ?? $serial,
-                'quantity'         => $item['quantity'] ?? 1,
+                'from_serial'      => $fromSerial,
+                'to_serial'        => $toSerial,
+                'quantity'         => $quantity,
                 'created_by'       => $userId,
             ]);
 
@@ -200,9 +223,12 @@ public function store(Request $request)
         return response()->json([
             'message' => 'Inventory process completed',
             'product_id' => $validated['product_id'],
-            'product_type_id' => $validated['product_type_id'],
+            // 'product_type_id' => $validated['product_type_id'],
             'firmware_version' => $validated['firmware_version'] ?? null,
             'tested_date' => $validated['tested_date'] ?? null,
+            'from_serial' => $fromSerial,
+            'to_serial' => $toSerial,
+            'quantity' => $quantity,
             'items' => $results,
         ]);
 
@@ -222,240 +248,426 @@ public function store(Request $request)
 }
 
 
+
 public function update(Request $request, $id)
 {
-    $item = Inventory::findOrFail($id);
+    try {
+        $item = \App\Models\Inventory::findOrFail($id);
 
- $validated = $request->validate([
-    'product_id'       => 'required|integer|exists:product,id',
-    'product_type_id'  => 'required|integer|exists:product_type,id', 
-    'serial_no'        => 'required|string|max:100|unique:inventory,serial_no,' . $id,
-    'firmware_version' => 'required|string|max:100',
-    'tested_status'    => 'required|string|in:PASS,FAIL,IN_PROGRESS,PENDING',
-    'tested_by'        => 'required|string|max:255',
-    'tested_date'      => 'required|date',
-    'test_remarks'     => 'nullable|string',
-    'from_serial'      => 'required|string|max:100',
-    'to_serial'        => 'required|string|max:100',
-    'quantity'         => 'required|integer|min:1',
-]);
-
-$validated['updated_by'] = auth()->id();
-
-$item->update($validated);
-
-    return response()->json([
-        'message' => 'Inventory item updated successfully',
-        'data'    => $item
-    ]);
-}
-
-
-    public function destroy($id)
-    {
-        $item = Inventory::findOrFail($id);
-        $item->deleted_by = auth()->id();
-        $item->save();
-        $item->delete();
-
-        return response()->json(['message' => 'Inventory item deleted successfully']);
-    }
-public function serialranges(Request $request)
-{
-    $query = Inventory::whereNull('deleted_at');
-
-    if ($request->filled('product_id')) {
-        $query->where('product_id', $request->product_id);
-    }
-
-    if ($request->filled('product_type_id')) {
-        $query->where('product_type_id', $request->product_type_id);
-    }
-
-    $items = $query->with(['product:id,name', 'productType:id,name'])->get();
-
-    // Group by product_id, product_type_id, from_serial, to_serial
-    $grouped = $items->groupBy(function ($item) {
-        return $item->product_id . '_' . $item->product_type_id . '_' . $item->from_serial . '_' . $item->to_serial;
-    });
-
-    $result = $grouped->map(function ($group) {
-        return [
-            'from_serial'  => $group[0]->from_serial,
-            'to_serial'    => $group[0]->to_serial,
-            'product'      => $group[0]->product,
-            'product_type' => $group[0]->productType,
-            'quantity'     => $group->sum('quantity'),
-            'items'        => $group->map(function($item) {
-                return [
-                    'id'            => $item->id,
-                    'serial_no'     => $item->serial_no,
-                    'tested_by'     => $item->tested_by,
-                    'tested_status' => $item->tested_status,
-                    'test_remarks'  => $item->test_remarks,
-                ];
-            }),
-        ];
-    })->values();
-
-    return response()->json($result);
-}
-
-
-
-public function serialrangeItems(Request $request, $from_serial, $to_serial)
-{
-    $from = min((int)$from_serial, (int)$to_serial);
-    $to   = max((int)$from_serial, (int)$to_serial);
-
-    // Fetch inventory items in the given range that are NOT deleted
-    $items = Inventory::whereNull('deleted_at')
-        ->whereBetween('serial_no', [$from_serial, $to_serial])
-        ->with(['product:id,name', 'productType:id,name'])
-        ->orderBy('serial_no')
-        ->get();
-
-    if ($items->isEmpty()) {
-        return response()->json(['message' => 'No records found for this range.'], 404);
-    }
-
-    // Prepare response
-    $resultItems = $items->map(function ($item) {
-        return [
-            'serial_no'     => $item->serial_no,
-            'product_name'  => $item->product->name ?? null,
-            'product_type'  => $item->productType->name ?? null,
-            'tested_by'     => $item->tested_by,
-            'tested_status' => $item->tested_status,
-            'test_remarks'  => $item->test_remarks,
-            'tested_date'   => $item->tested_date
-                ? \Carbon\Carbon::parse($item->tested_date)->format('Y-m-d')
-                : null,
-        ];
-    });
-
-    $first = $items->first();
-
-    return response()->json([
-        'from_serial'      => $from_serial,
-        'to_serial'        => $to_serial,
-        'product'          => $first->product,
-        'product_type'     => $first->productType,
-        'firmware_version' => $first->firmware_version,
-        'tested_date'      => $first->tested_date,
-        'quantity'         => $resultItems->count(),
-        'items'            => $resultItems,
-    ]);
-}
-
-
-
-
-
-public function updateSerialRange(Request $request, $from_serial, $to_serial)
-{
-    $validated = $request->validate([
-        'product_id' => ['required', 'integer', function($attribute, $value, $fail) {
-            if (!\App\Models\Product::where('id', $value)->whereNull('deleted_at')->exists()) {
-                $fail("Invalid product.");
-            }
-        }],
-        'product_type_id' => ['required', 'integer', function($attribute, $value, $fail) {
-            if (!\App\Models\ProductType::where('id', $value)->whereNull('deleted_at')->exists()) {
-                $fail("Invalid product type.");
-            }
-        }],
-        'items' => 'required|array|min:1',
-        'items.*.from_serial' => 'required|string|max:100',
-        'items.*.to_serial' => 'required|string|max:100',
-        'items.*.serial_no' => 'nullable|string',
-        'items.*.tested_by' => 'nullable|string|max:255',
-        'items.*.tested_status' => 'nullable|string',
-        'items.*.test_remarks' => 'nullable|string',
-        'items.*.quantity' => 'nullable|integer|min:1',
-        'firmware_version' => 'nullable|string|max:100',
-        'tested_date' => 'nullable|date',
-    ]);
-
-    $userId = auth()->id() ?? 1;
-
-    $inputSerials = collect($validated['items'])
-        ->pluck('serial_no')
-        ->filter()
-        ->toArray();
-
-    // --- Delete inventory serials not in new input and track them in deleted_serials ---
-    $toDelete = Inventory::where('from_serial', '<=', $from_serial)
-        ->where('to_serial', '>=', $to_serial)
-        ->when(!empty($inputSerials), function ($query) use ($inputSerials) {
-            $query->whereNotIn('serial_no', $inputSerials);
-        })
-        ->get();
-
-    foreach ($toDelete as $item) {
-        \App\Models\DeletedSerial::create([
-            'inventory_id' => $item->id,
-            'product_id' => $item->product_id,
-            'product_type_id' => $item->product_type_id,
-            'serial_no' => $item->serial_no,
-            'deleted_at' => now(),
+        $validated = $request->validate([
+            'product_id'       => 'required|integer|exists:products,id',
+            'product_type_id'  => 'required|integer|exists:product_types,id',
+            'serial_no'        => 'required|string|max:100|unique:inventory,serial_no,' . $id,
+            'firmware_version' => 'nullable|string|max:100',
+            'tested_status'    => 'nullable|string|in:PASS,FAIL,IN_PROGRESS,PENDING',
+            'tested_by'        => 'nullable|string|max:255',
+            'tested_date'      => 'nullable|date',
+            'test_remarks'     => 'nullable|string|max:255',
+            'from_serial'      => 'required|string|max:100',
+            'to_serial'        => 'required|string|max:100',
+            'quantity'         => 'required|integer|min:1',
         ]);
 
-        $item->forceDelete(); // remove from inventory
+        // 🧠 Normalize serials to numeric (if they contain prefixes)
+        $fromNum = (int) filter_var($validated['from_serial'], FILTER_SANITIZE_NUMBER_INT);
+        $toNum   = (int) filter_var($validated['to_serial'], FILTER_SANITIZE_NUMBER_INT);
+
+       
+        if (
+            !empty($validated['from_serial']) &&
+            !empty($validated['to_serial']) &&
+            $validated['from_serial'] !== $validated['to_serial'] &&
+            $fromNum > $toNum
+        ) {
+            return response()->json([
+                'message' => 'From Serial cannot be greater than To Serial.',
+                'status'  => 'invalid_range',
+            ], 422);
+        }
+
+        // ✅ Ensure serial was purchased
+        $isPurchased = \App\Models\SparepartPurchaseItem::where('product_id', $validated['product_id'])
+            ->where('serial_no', $validated['serial_no'])
+            ->exists();
+
+        if (!$isPurchased) {
+            return response()->json([
+                'message' => 'This serial number has not been purchased for the selected product.',
+                'status'  => 'not_purchased',
+            ], 422);
+        }
+
+        // ✅ Ensure serial is not deleted
+        $isDeletedSerial = \App\Models\DeletedSerial::where('serial_no', $validated['serial_no'])
+            ->where('product_id', $validated['product_id'])
+            ->where('product_type_id', $validated['product_type_id'])
+            ->exists();
+
+        if ($isDeletedSerial) {
+            return response()->json([
+                'message' => 'This serial number is marked as deleted and cannot be updated.',
+                'status'  => 'deleted_serial',
+            ], 422);
+        }
+
+        // ✅ Update inventory item safely
+        $validated['updated_by'] = auth()->id();
+        $item->update($validated);
+
+        return response()->json([
+            'message' => 'Inventory item updated successfully',
+            'data'    => $item,
+            'status'  => 'updated',
+        ]);
+
+    } catch (\Illuminate\Validation\ValidationException $ve) {
+        return response()->json([
+            'message' => 'Validation failed',
+            'errors'  => $ve->errors(),
+        ], 422);
+    } catch (\Exception $e) {
+        \Log::error('Inventory update error: ' . $e->getMessage());
+        return response()->json([
+            'message' => 'Failed to update inventory item',
+            'error'   => $e->getMessage(),
+        ], 500);
     }
+}
 
-    $updatedCount = 0;
-    $createdCount = 0;
-
-    // --- Loop through items to update or create ---
-    foreach ($validated['items'] as $itemData) {
-        $existing = Inventory::where('serial_no', $itemData['serial_no'] ?? null)
-            ->where('from_serial', '<=', $from_serial)
-            ->where('to_serial', '>=', $to_serial)
+public function getSerialDetails($serial_no)
+{
+    try {
+        $inventory = \App\Models\Inventory::with('product:id,name')
+            ->select('id', 'product_id', 'serial_no', 'tested_status', 'tested_by', 'created_at')
+            ->where('serial_no', $serial_no)
+            ->whereNull('deleted_at')
             ->first();
 
-        if ($existing) {
-            $existing->update([
-                'product_id'       => $validated['product_id'],
-                'product_type_id'  => $validated['product_type_id'],
-                'firmware_version' => $validated['firmware_version'] ?? $existing->firmware_version,
-                'tested_date'      => $validated['tested_date'] ?? $existing->tested_date,
-                'tested_by'        => $itemData['tested_by'] ?? $existing->tested_by,
-                'tested_status'    => $itemData['tested_status'] ?? $existing->tested_status,
-                'test_remarks'     => $itemData['test_remarks'] ?? $existing->test_remarks,
-                'from_serial'      => $itemData['from_serial'],
-                'to_serial'        => $itemData['to_serial'],
-                'quantity'         => $itemData['quantity'] ?? $existing->quantity,
-                'updated_by'       => $userId,
-            ]);
-            $updatedCount++;
-        } else {
-            Inventory::create([
-                'product_id'       => $validated['product_id'],
-                'product_type_id'  => $validated['product_type_id'],
-                'firmware_version' => $validated['firmware_version'] ?? null,
-                'tested_date'      => $validated['tested_date'] ?? null,
-                'serial_no'        => $itemData['serial_no'] ?? null,
-                'tested_by'        => $itemData['tested_by'] ?? null,
-                'tested_status'    => $itemData['tested_status'] ?? null,
-                'test_remarks'     => $itemData['test_remarks'] ?? null,
-                'from_serial'      => $itemData['from_serial'],
-                'to_serial'        => $itemData['to_serial'],
-                'quantity'         => $itemData['quantity'] ?? 1,
-                'updated_by'       => $userId,
-            ]);
-            $createdCount++;
+        if (!$inventory) {
+            return response()->json([
+                'message' => "No record found for serial number: {$serial_no}",
+                'exists' => false,
+            ], 404);
         }
-    }
 
-    return response()->json([
-        'message' => 'Serial range updated successfully',
-        'updated_count' => $updatedCount,
-        'created_count' => $createdCount,
-        'from_serial' => $from_serial,
-        'to_serial' => $to_serial,
-    ]);
+        $data = [
+            'id'            => $inventory->id,
+            'product_name'  => $inventory->product?->name ?? 'N/A',
+            'serial_no'     => $inventory->serial_no,
+            'tested_status' => $inventory->tested_status,
+            'tested_by'     => $inventory->tested_by,
+            'created_at'    => $inventory->created_at->format('Y-m-d H:i:s'),
+        ];
+
+        return response()->json([
+            'message' => "Inventory serial details retrieved successfully",
+            'exists'  => true,
+            'data'    => $data,
+        ]);
+
+    } catch (\Exception $e) {
+        \Log::error('Inventory getSerialDetails error: ' . $e->getMessage());
+
+        return response()->json([
+            'message' => 'Failed to retrieve inventory serial details',
+            'error'   => $e->getMessage(),
+        ], 500);
+    }
 }
+
+public function destroy($id)
+{
+    try {
+        $inventory = \App\Models\Inventory::find($id);
+
+        if (!$inventory) {
+            return response()->json([
+                'message' => 'Inventory record not found.',
+                'status'  => 'not_found',
+            ], 404);
+        }
+
+        // ✅ Create a record in DeletedSerial (if not already exists)
+        \App\Models\DeletedSerial::firstOrCreate([
+            'serial_no'   => $inventory->serial_no,
+            'product_id'  => $inventory->product_id,
+            // 'product_type_id' => $inventory->product_type_id ?? null,
+        ], [
+            'reason'      => 'Deleted from inventory',
+            'deleted_by'  => auth()->id() ?? 1,
+        ]);
+
+        // ✅ Soft delete from Inventory
+        $inventory->update([
+            'deleted_at' => now(),
+            'deleted_by' => auth()->id() ?? 1,
+        ]);
+
+        return response()->json([
+            'message' => 'Inventory serial deleted successfully.',
+            'status'  => 'deleted',
+            'data'    => [
+                'serial_no'   => $inventory->serial_no,
+                'product_id'  => $inventory->product_id,
+                'tested_by'   => $inventory->tested_by,
+                'deleted_at'  => now()->format('Y-m-d H:i:s'),
+            ],
+        ]);
+
+    } catch (\Exception $e) {
+        \Log::error('Inventory delete error: ' . $e->getMessage());
+
+        return response()->json([
+            'message' => 'Failed to delete inventory serial.',
+            'error'   => $e->getMessage(),
+        ], 500);
+    }
+}
+
+    // public function destroy($id)
+    // {
+    //     $item = Inventory::findOrFail($id);
+    //     $item->deleted_by = auth()->id();
+    //     $item->save();
+    //     $item->delete();
+
+    //     return response()->json(['message' => 'Inventory item deleted successfully']);
+    // }
+// public function serialranges(Request $request)
+// {
+//     $query = Inventory::whereNull('deleted_at');
+
+//     if ($request->filled('product_id')) {
+//         $query->where('product_id', $request->product_id);
+//     }
+
+//     if ($request->filled('product_type_id')) {
+//         $query->where('product_type_id', $request->product_type_id);
+//     }
+
+//     $items = $query->with(['product:id,name', 'productType:id,name'])->get();
+
+//     // Group by product_id, product_type_id, from_serial, to_serial
+//     $grouped = $items->groupBy(function ($item) {
+//         return $item->product_id . '_' . $item->product_type_id . '_' . $item->from_serial . '_' . $item->to_serial;
+//     });
+
+//     $result = $grouped->map(function ($group) {
+//         $fromSerial = $group[0]->from_serial;
+//         $toSerial   = $group[0]->to_serial;
+//         $productId  = $group[0]->product_id;
+//         $typeId     = $group[0]->product_type_id;
+
+//         // ✅ Count how many serials actually exist in DB between from and to
+//         $serialCount = Inventory::where('product_id', $productId)
+//             ->where('product_type_id', $typeId)
+//             ->whereNull('deleted_at')
+//             ->whereBetween('serial_no', [$fromSerial, $toSerial])
+//             ->count();
+
+//         return [
+//             'from_serial'  => $fromSerial,
+//             'to_serial'    => $toSerial,
+//             'product'      => $group[0]->product,
+//             'product_type' => $group[0]->productType,
+//             'quantity'     => $serialCount, // ✅ actual count from DB
+//             'items'        => $group->map(function ($item) {
+//                 return [
+//                     'id'            => $item->id,
+//                     'serial_no'     => $item->serial_no,
+//                     'tested_by'     => $item->tested_by,
+//                     'tested_status' => $item->tested_status,
+//                     'test_remarks'  => $item->test_remarks,
+//                 ];
+//             })->values(),
+//         ];
+//     })->values();
+
+//     return response()->json($result);
+// }
+    
+
+
+
+
+// public function serialrangeItems(Request $request, $from_serial, $to_serial)
+// {
+//     $from = min((int)$from_serial, (int)$to_serial);
+//     $to   = max((int)$from_serial, (int)$to_serial);
+
+//     // Fetch inventory items in the given range that are NOT deleted
+//     $items = Inventory::whereNull('deleted_at')
+//         ->whereBetween('serial_no', [$from_serial, $to_serial])
+//         ->with(['product:id,name', 'productType:id,name'])
+//         ->orderBy('serial_no')
+//         ->get();
+
+//     if ($items->isEmpty()) {
+//         return response()->json(['message' => 'No records found for this range.'], 404);
+//     }
+
+//     // Prepare response
+//     $resultItems = $items->map(function ($item) {
+//         return [
+//             'serial_no'     => $item->serial_no,
+//             'product_name'  => $item->product->name ?? null,
+//             'product_type'  => $item->productType->name ?? null,
+//             'tested_by'     => $item->tested_by,
+//             'tested_status' => $item->tested_status,
+//             'test_remarks'  => $item->test_remarks,
+//             'tested_date'   => $item->tested_date
+//                 ? \Carbon\Carbon::parse($item->tested_date)->format('Y-m-d')
+//                 : null,
+//         ];
+//     });
+
+//     $first = $items->first();
+
+//     return response()->json([
+//         'from_serial'      => $from_serial,
+//         'to_serial'        => $to_serial,
+//         'product'          => $first->product,
+//         'product_type'     => $first->productType,
+//         'firmware_version' => $first->firmware_version,
+//         'tested_date'      => $first->tested_date,
+//         'quantity'         => $resultItems->count(),
+//         'items'            => $resultItems,
+//     ]);
+// }
+
+
+
+
+
+    public function updateSerialRange(Request $request, $from_serial, $to_serial)
+    {
+        $validated = $request->validate([
+            'product_id' => ['required', 'integer', function($attribute, $value, $fail) {
+                if (!\App\Models\Product::where('id', $value)->whereNull('deleted_at')->exists()) {
+                    $fail("Invalid product.");
+                }
+            }],
+            // 'product_type_id' => ['required', 'integer', function($attribute, $value, $fail) {
+            //     if (!\App\Models\ProductType::where('id', $value)->whereNull('deleted_at')->exists()) {
+            //         $fail("Invalid product type.");
+            //     }
+            // }],
+            'items' => 'required|array|min:1',
+            'items.*.from_serial' => 'required|string|max:100',
+            'items.*.to_serial' => 'required|string|max:100',
+            'items.*.serial_no' => 'nullable|string',
+            'items.*.tested_by' => 'nullable|string|max:255',
+            'items.*.tested_status' => 'nullable|string',
+            'items.*.test_remarks' => 'nullable|string',
+            'items.*.quantity' => 'nullable|integer|min:1',
+            'firmware_version' => 'nullable|string|max:100',
+            'tested_date' => 'nullable|date',
+        ]);
+
+        $userId = auth()->id() ?? 1;
+
+        $inputSerials = collect($validated['items'])
+            ->pluck('serial_no')
+            ->filter()
+            ->toArray();
+
+        $toDelete = \App\Models\Inventory::where('from_serial', '<=', $from_serial)
+            ->where('to_serial', '>=', $to_serial)
+            ->when(!empty($inputSerials), function ($query) use ($inputSerials) {
+                $query->whereNotIn('serial_no', $inputSerials);
+            })
+            ->get();
+
+        foreach ($toDelete as $item) {
+            \App\Models\DeletedSerial::create([
+                'inventory_id' => $item->id,
+                'product_id' => $item->product_id,
+                'product_type_id' => $item->product_type_id,
+                'serial_no' => $item->serial_no,
+                'deleted_at' => now(),
+            ]);
+
+            $item->forceDelete(); // remove from inventory
+        }
+
+        $updatedCount = 0;
+        $createdCount = 0;
+        $notPurchased = [];
+
+        foreach ($validated['items'] as $itemData) {
+            $serialNo = $itemData['serial_no'] ?? null;
+
+            $isPurchased = false;
+            if ($serialNo) {
+                $isPurchased = \App\Models\SparepartPurchaseItem::where('product_id', $validated['product_id'])
+                    ->where('serial_no', $serialNo)
+                    ->exists();
+            }
+
+            if (!$isPurchased && $serialNo) {
+                $notPurchased[] = $serialNo;
+            }
+
+            $existing = \App\Models\Inventory::where('serial_no', $serialNo)
+                ->where('from_serial', '<=', $from_serial)
+                ->where('to_serial', '>=', $to_serial)
+                ->first();
+
+            if ($existing) {
+                $existing->update([
+                    'product_id'       => $validated['product_id'],
+                    // 'product_type_id'  => $validated['product_type_id'],
+                    'firmware_version' => $validated['firmware_version'] ?? $existing->firmware_version,
+                    'tested_date'      => $validated['tested_date'] ?? $existing->tested_date,
+                    'tested_by'        => $itemData['tested_by'] ?? $existing->tested_by,
+                    'tested_status'    => $itemData['tested_status'] ?? $existing->tested_status,
+                    'test_remarks'     => $itemData['test_remarks'] ?? $existing->test_remarks,
+                    'from_serial'      => $itemData['from_serial'],
+                    'to_serial'        => $itemData['to_serial'],
+                    'quantity'         => $itemData['quantity'] ?? $existing->quantity,
+                    'updated_by'       => $userId,
+                    'is_purchased'     => $isPurchased,
+                ]);
+                $updatedCount++;
+            } else {
+                \App\Models\Inventory::create([
+                    'product_id'       => $validated['product_id'],
+                    // 'product_type_id'  => $validated['product_type_id'],
+                    'firmware_version' => $validated['firmware_version'] ?? null,
+                    'tested_date'      => $validated['tested_date'] ?? null,
+                    'serial_no'        => $serialNo,
+                    'tested_by'        => $itemData['tested_by'] ?? null,
+                    'tested_status'    => $itemData['tested_status'] ?? null,
+                    'test_remarks'     => $itemData['test_remarks'] ?? null,
+                    'from_serial'      => $itemData['from_serial'],
+                    'to_serial'        => $itemData['to_serial'],
+                    'quantity'         => $itemData['quantity'] ?? 1,
+                    'updated_by'       => $userId,
+                    'is_purchased'     => $isPurchased,
+                ]);
+                $createdCount++;
+            }
+        }
+
+        // --- Response with purchase check status ---
+        $message = 'Serial range updated successfully';
+        $status = 'success';
+
+        if (!empty($notPurchased)) {
+            $message = 'Some serials were not found in purchase records.';
+            $status = 'partial';
+        }
+
+        return response()->json([
+            'status' => $status,
+            'message' => $message,
+            'updated_count' => $updatedCount,
+            'created_count' => $createdCount,
+            'not_purchased_serials' => $notPurchased,
+            'from_serial' => $from_serial,
+            'to_serial' => $to_serial,
+        ]);
+    }
 
 
 public function deleteSerial($serial_no)
@@ -473,7 +685,7 @@ public function deleteSerial($serial_no)
     \DB::table('deleted_serials')->insert([
         'inventory_id'   => $serial->id,
         'product_id'     => $serial->product_id,
-        'product_type_id'=> $serial->product_type_id,
+        // 'product_type_id'=> $serial->product_type_id,
         'serial_no'      => $serial_no,
         'deleted_at'     => now(),
     ]);
@@ -484,94 +696,94 @@ public function deleteSerial($serial_no)
 
 
 
-public function deleteSerialRange(Request $request, $from_serial, $to_serial)
-{
-    // --- Validate request ---
-    $request->validate([
-        'product_id'      => 'required|integer',
-        'product_type_id' => 'required|integer',
-    ]);
+// public function deleteSerialRange(Request $request, $from_serial, $to_serial)
+// {
+//     // --- Validate request ---
+//     $request->validate([
+//         'product_id'      => 'required|integer',
+//         // 'product_type_id' => 'required|integer',
+//     ]);
 
-    $productId     = $request->product_id;
-    $productTypeId = $request->product_type_id;
-    $userId        = Auth::id() ?? 1;
+//     $productId     = $request->product_id;
+//     // $productTypeId = $request->product_type_id;
+//     $userId        = Auth::id() ?? 1;
 
-    // --- Fetch matching items ---
-    $items = Inventory::whereNull('deleted_at')
-        ->where('product_id', $productId)
-        ->where('product_type_id', $productTypeId)
-        ->whereBetween('serial_no', [$from_serial, $to_serial])
-        ->get();
+//     // --- Fetch matching items ---
+//     $items = Inventory::whereNull('deleted_at')
+//         ->where('product_id', $productId)
+//         // ->where('product_type_id', $productTypeId)
+//         ->whereBetween('serial_no', [$from_serial, $to_serial])
+//         ->get();
 
-    if ($items->isEmpty()) {
-        return response()->json([
-            'message' => 'No records found for this range.'
-        ], 404);
-    }
+//     if ($items->isEmpty()) {
+//         return response()->json([
+//             'message' => 'No records found for this range.'
+//         ], 404);
+//     }
 
-    // --- Update deleted_by and soft delete ---
-    foreach ($items as $item) {
-        $item->deleted_by = $userId;
-        $item->save();
-        $item->delete(); // this triggers SoftDelete (sets deleted_at)
-    }
+//     // --- Update deleted_by and soft delete ---
+//     foreach ($items as $item) {
+//         $item->deleted_by = $userId;
+//         $item->save();
+//         $item->delete(); // this triggers SoftDelete (sets deleted_at)
+//     }
 
-    return response()->json([
-        'message'         => 'Serial range deleted successfully.',
-        'deleted_count'   => $items->count(),
-        'from_serial'     => $from_serial,
-        'to_serial'       => $to_serial,
-        'product_id'      => $productId,
-        'product_type_id' => $productTypeId,
-    ]);
-}
+//     return response()->json([
+//         'message'         => 'Serial range deleted successfully.',
+//         'deleted_count'   => $items->count(),
+//         'from_serial'     => $from_serial,
+//         'to_serial'       => $to_serial,
+//         'product_id'      => $productId,
+//         // 'product_type_id' => $productTypeId,
+//     ]);
+// }
 
-public function countBySeries()
-{
-    // Exclude deleted items and sold items
-     $soldSerials = SaleItem::pluck('serial_no')->toArray();
+// public function countBySeries()
+// {
+//     // Exclude deleted items and sold items
+//      $soldSerials = SaleItem::pluck('serial_no')->toArray();
 
-    $items = Inventory::whereNull('deleted_at')
-        ->whereNotIn('serial_no', $soldSerials)
-        ->get();
+//     $items = Inventory::whereNull('deleted_at')
+//         ->whereNotIn('serial_no', $soldSerials)
+//         ->get();
 
-    // Initialize counters
-    $seriesCounts = [
-        '0 Series' => 0,
-        '7 Series' => 0,
-        '8 Series' => 0,
-        '9 Series' => 0,
-    ];
+//     // Initialize counters
+//     $seriesCounts = [
+//         '0 Series' => 0,
+//         '7 Series' => 0,
+//         '8 Series' => 0,
+//         '9 Series' => 0,
+//     ];
 
-    foreach ($items as $item) {
-        // Determine series from the first character of serial_no
-        $firstChar = substr($item->serial_no, 0, 1);
+//     foreach ($items as $item) {
+//         // Determine series from the first character of serial_no
+//         $firstChar = substr($item->serial_no, 0, 1);
 
-        switch ($firstChar) {
-            case '0':
-                $seriesCounts['0 Series'] += $item->quantity;
-                break;
-            case '7':
-                $seriesCounts['7 Series'] += $item->quantity;
-                break;
-            case '8':
-                $seriesCounts['8 Series'] += $item->quantity;
-                break;
-            case '9':
-                $seriesCounts['9 Series'] += $item->quantity;
-                break;
-        }
-    }
+//         switch ($firstChar) {
+//             case '0':
+//                 $seriesCounts['0 Series'] += $item->quantity;
+//                 break;
+//             case '7':
+//                 $seriesCounts['7 Series'] += $item->quantity;
+//                 break;
+//             case '8':
+//                 $seriesCounts['8 Series'] += $item->quantity;
+//                 break;
+//             case '9':
+//                 $seriesCounts['9 Series'] += $item->quantity;
+//                 break;
+//         }
+//     }
 
-    // Total VCI count (sum of all series)
-    $total = array_sum($seriesCounts);
+//     // Total VCI count (sum of all series)
+//     $total = array_sum($seriesCounts);
 
-    return response()->json([
-        'message'       => 'Product count by series',
-        'total_vcis'    => $total,
-        'series_counts' => $seriesCounts,
-    ]);
-}
+//     return response()->json([
+//         'message'       => 'Product count by series',
+//         'total_vcis'    => $total,
+//         'series_counts' => $seriesCounts,
+//     ]);
+// }
 
 public function getMissingSerials($from_serial, $to_serial)
 {
@@ -670,5 +882,66 @@ public function getMissingSerials($from_serial, $to_serial)
 
 
 
+
+public function checkSerialsPurchased(Request $request)
+{
+    $request->validate([
+        'serials' => 'required|array',
+        'serials.*' => 'required|string',
+        'product_id' => 'required|integer', // optional, add if inventory is product-specific
+    ]);
+
+    $serials = array_map('trim', $request->serials); // Trim spaces
+    $productId = $request->product_id ?? null;
+
+    // 🔹 Fetch purchased serials that match the given serial numbers
+    $purchasedSerials = \App\Models\SparepartPurchaseItem::whereIn('serial_no', $serials)
+        ->pluck('serial_no')
+        ->map(fn($s) => trim($s))
+        ->toArray();
+
+    // 🔹 Fetch serials that already exist in inventory
+    $inventoryQuery = \App\Models\Inventory::whereIn('serial_no', $serials);
+    if ($productId) {
+        $inventoryQuery->where('product_id', $productId); // filter by product if needed
+    }
+    $existingInventorySerials = $inventoryQuery
+        ->pluck('serial_no')
+        ->map(fn($s) => trim($s))
+        ->toArray();
+
+    // 🔹 Determine which serials are not purchased
+    $notPurchasedSerials = array_diff($serials, $purchasedSerials);
+
+    // 🔹 Prepare items with status
+    $items = [];
+    foreach ($serials as $s) {
+        if (in_array($s, $existingInventorySerials)) {
+            $items[] = [
+                'serial_no' => $s,
+                'status' => 'exists',
+                'message' => 'Already exists in inventory.',
+            ];
+        } elseif (in_array($s, $notPurchasedSerials)) {
+            $items[] = [
+                'serial_no' => $s,
+                'status' => 'not_purchased',
+                'message' => 'Serial not purchased.',
+            ];
+        } else {
+            $items[] = [
+                'serial_no' => $s,
+                'status' => 'purchased',
+                'message' => 'Serial purchased and available to add.',
+            ];
+        }
+    }
+
+    return response()->json([
+        'purchased' => array_values(array_diff($purchasedSerials, $existingInventorySerials)),
+        'not_purchased' => array_values($notPurchasedSerials),
+        'items' => $items,
+    ]);
+}
 
 }

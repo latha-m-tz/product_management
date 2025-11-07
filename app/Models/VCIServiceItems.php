@@ -16,7 +16,7 @@ protected $table = 'service_vci_items';
 protected $schema = 'public';
 
     protected $fillable = [
-        'service_vci_id',
+    'service_vci_id',
     'vci_serial_no',
     'tested_date',
     'issue_found',
@@ -49,6 +49,13 @@ public function vendor()
 {
     return $this->belongsTo(Vendor::class, 'vendor_id', 'id');
 }
+    public function productType()
+    {
+        return $this->belongsTo(ProductType::class, 'product_type_id', 'id');
+    }
+   public function delivery()
+{
+    return $this->hasOne(ServiceVCIDelivery::class, 'service_vci_items_id');
+}
 
-   
 }
