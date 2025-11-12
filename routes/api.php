@@ -30,9 +30,8 @@ Route::post('/register', [AuthController::class, 'register']);
 Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
 Route::post('/verify-otp', [AuthController::class, 'verifyOtp']);
 Route::post('/reset-password', [AuthController::class, 'resetPassword']);
-Route::get('/users', [AuthController::class, 'getUsers']); // public endpoint (all usernames)
+Route::get('/users', [AuthController::class, 'getUsers']);
 
-// ✅ Protected routes (require JWT token)
 Route::middleware(['jwt.auth'])->group(function () {
     Route::get('/user', [AuthController::class, 'user']);
     Route::post('/logout', [AuthController::class, 'logout']);
@@ -40,7 +39,6 @@ Route::middleware(['jwt.auth'])->group(function () {
     Route::get('/users-protected', [AuthController::class, 'index']); // renamed to avoid confusion
 });
 
-// ✅ Optional view routes (if you use Blade)
 Route::view('/forgot-password-form', 'auth.forgot_password');
 Route::view('/reset-password-form', 'auth.reset_password');
 Route::get('/verify-otp-form', function () {
@@ -120,13 +118,13 @@ Route::delete('/serialrange/{from_serial}/{to_serial}', [InventoryController::cl
     Route::post('/', [InventoryController::class, 'store']);
     Route::put('/{id}', [InventoryController::class, 'update']);
     Route::delete('/{id}', [InventoryController::class, 'destroy']);
-    Route::post('/{serial_number}', [InventoryController::class, 'deleteSerial']);
+    // Route::post('/{serial_number}', [InventoryController::class, 'deleteSerial']);
     Route::get('/missing-serials/{from_serial}/{to_serial}', [InventoryController::class, 'getMissingSerials']);
 
 });
 Route::post('/check-serials-purchased', [InventoryController::class, 'checkSerialsPurchased']);
-Route::get('/inventory/serial/{serial_no}', [InventoryController::class, 'getSerialDetails']);
-Route::delete('/inventory/{id}', [InventoryController::class, 'destroy']);
+Route::get('/inventory/serials/active', [InventoryController::class, 'getAllActiveSerials']);
+Route::delete('/inventory/delete/{serial_no}', [InventoryController::class, 'deleteSerial']);
 
 
 //Sales
