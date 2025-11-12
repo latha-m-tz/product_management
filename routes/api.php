@@ -36,7 +36,7 @@ Route::middleware(['jwt.auth'])->group(function () {
     Route::get('/user', [AuthController::class, 'user']);
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/register', [AuthController::class, 'getUsers']);
-    Route::get('/users-protected', [AuthController::class, 'index']); // renamed to avoid confusion
+    Route::get('/users-protected', [AuthController::class, 'index']);
 });
 
 Route::view('/forgot-password-form', 'auth.forgot_password');
