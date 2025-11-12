@@ -285,12 +285,14 @@ public function getProductSerials($productId)
 {
     $serials = \DB::table('inventory')
         ->where('product_id', $productId)
-        ->whereNull('deleted_at')   // only not deleted
+        ->whereNull('deleted_at') // only not deleted
+        ->where('tested_status', 'Pass') // ✅ only passed serials
         ->select('id', 'serial_no', 'product_id', 'tested_status')
         ->get();
 
     return response()->json($serials);
 }
+
 
 
 

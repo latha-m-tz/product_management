@@ -18,18 +18,14 @@ protected $schema = 'public';
     protected $fillable = [
     'service_vci_id',
     'vci_serial_no',
-    'tested_date',
     'issue_found',
-    'action_taken',
-    'remarks',
-    'testing_assigned_to',
-    'testing_status',
     'product_id',
     'upload_image',
+    'status',
+    'remarks',
     'created_by',
     'updated_by',
     'deleted_by',
-    'warranty_status',  
     'urgent',         
 
 ];

@@ -83,11 +83,11 @@ class InventoryController extends Controller
         return response()->json($serials);
     }
 
-    public function show($id)
-    {
-        $item = Inventory::with(['product', 'tester', 'productType'])->findOrFail($id);
-        return response()->json($item);
-    }
+    // public function show($id)
+    // {
+    //     $item = Inventory::with(['product', 'tester', 'productType'])->findOrFail($id);
+    //     return response()->json($item);
+    // }
 public function store(Request $request)
 {
     try {
@@ -334,105 +334,122 @@ public function update(Request $request, $id)
     }
 }
 
-public function getSerialDetails($serial_no)
+public function getAllActiveSerials(Request $request)
 {
     try {
-        $inventory = \App\Models\Inventory::with('product:id,name')
+        $query = \App\Models\Inventory::with('product:id,name')
             ->select('id', 'product_id', 'serial_no', 'tested_status', 'tested_by', 'created_at')
-            ->where('serial_no', $serial_no)
-            ->whereNull('deleted_at')
-            ->first();
+            ->whereNull('deleted_by')
+            ->whereNull('deleted_at');
 
-        if (!$inventory) {
+        // ✅ Optional filter by product (series) name
+        if ($request->has('series')) {
+            $series = urldecode($request->query('series'));
+
+            // Remove text inside parentheses if present (like "VCI 5-SERIES-12V (TYPE A)")
+            if (preg_match('/^(.*)\((.*)\)$/', $series, $matches)) {
+                $series = trim($matches[1]);
+            }
+
+            // Find product by name
+            $product = \App\Models\Product::where('name', $series)
+                ->whereNull('deleted_at')
+                ->first();
+
+            if (!$product) {
+                return response()->json([
+                    'message' => "Product '{$series}' not found",
+                    'exists'  => false,
+                    'data'    => [],
+                ], 404);
+            }
+
+            // Filter inventories by found product_id
+            $query->where('product_id', $product->id);
+        }
+
+        $inventories = $query->orderBy('id', 'desc')->get();
+
+        if ($inventories->isEmpty()) {
             return response()->json([
-                'message' => "No record found for serial number: {$serial_no}",
-                'exists' => false,
+                'message' => 'No active serial numbers found',
+                'exists'  => false,
+                'data'    => [],
             ], 404);
         }
 
-        $data = [
-            'id'            => $inventory->id,
-            'product_name'  => $inventory->product?->name ?? 'N/A',
-            'serial_no'     => $inventory->serial_no,
-            'tested_status' => $inventory->tested_status,
-            'tested_by'     => $inventory->tested_by,
-            'created_at'    => $inventory->created_at->format('Y-m-d H:i:s'),
-        ];
+        $data = $inventories->map(function ($inventory) {
+            return [
+                'id'            => $inventory->id,
+                'product_name'  => $inventory->product?->name ?? 'N/A',
+                'serial_no'     => $inventory->serial_no,
+                'tested_status' => $inventory->tested_status,
+                'tested_by'     => $inventory->tested_by,
+                'created_at'    => $inventory->created_at->format('Y-m-d H:i:s'),
+            ];
+        });
 
         return response()->json([
-            'message' => "Inventory serial details retrieved successfully",
+            'message' => 'Active inventory serials retrieved successfully',
             'exists'  => true,
             'data'    => $data,
         ]);
 
     } catch (\Exception $e) {
-        \Log::error('Inventory getSerialDetails error: ' . $e->getMessage());
+        \Log::error('Inventory getAllActiveSerials error: ' . $e->getMessage());
 
         return response()->json([
-            'message' => 'Failed to retrieve inventory serial details',
+            'message' => 'Failed to retrieve active inventory serials',
             'error'   => $e->getMessage(),
         ], 500);
     }
 }
 
-public function destroy($id)
+
+public function deleteSerial($serial_no)
 {
     try {
-        $inventory = \App\Models\Inventory::find($id);
+        \Log::info("🗑️ Deleting serial number: {$serial_no}");
+
+        // Find by serial number
+        $inventory = \App\Models\Inventory::where('serial_no', $serial_no)
+            ->whereNull('deleted_at')
+            ->first();
 
         if (!$inventory) {
             return response()->json([
-                'message' => 'Inventory record not found.',
-                'status'  => 'not_found',
+                'message' => "Serial number {$serial_no} not found or already deleted.",
+                'status'  => false,
             ], 404);
         }
 
-        // ✅ Create a record in DeletedSerial (if not already exists)
-        \App\Models\DeletedSerial::firstOrCreate([
-            'serial_no'   => $inventory->serial_no,
-            'product_id'  => $inventory->product_id,
-            // 'product_type_id' => $inventory->product_type_id ?? null,
-        ], [
-            'reason'      => 'Deleted from inventory',
-            'deleted_by'  => auth()->id() ?? 1,
-        ]);
-
-        // ✅ Soft delete from Inventory
-        $inventory->update([
-            'deleted_at' => now(),
-            'deleted_by' => auth()->id() ?? 1,
-        ]);
+        // Soft delete
+        $inventory->deleted_by = auth()->id() ?? null;
+        $inventory->deleted_at = now();
+        $inventory->save();
 
         return response()->json([
-            'message' => 'Inventory serial deleted successfully.',
-            'status'  => 'deleted',
-            'data'    => [
-                'serial_no'   => $inventory->serial_no,
-                'product_id'  => $inventory->product_id,
-                'tested_by'   => $inventory->tested_by,
-                'deleted_at'  => now()->format('Y-m-d H:i:s'),
-            ],
-        ]);
-
+            'message' => "Serial number {$serial_no} deleted successfully.",
+            'status'  => true,
+        ], 200);
     } catch (\Exception $e) {
-        \Log::error('Inventory delete error: ' . $e->getMessage());
-
+        \Log::error("❌ Inventory delete error: " . $e->getMessage());
         return response()->json([
-            'message' => 'Failed to delete inventory serial.',
+            'message' => 'Failed to delete serial number.',
             'error'   => $e->getMessage(),
         ], 500);
     }
 }
 
-    // public function destroy($id)
-    // {
-    //     $item = Inventory::findOrFail($id);
-    //     $item->deleted_by = auth()->id();
-    //     $item->save();
-    //     $item->delete();
+    public function destroy($id)
+    {
+        $item = Inventory::findOrFail($id);
+        $item->deleted_by = auth()->id();
+        $item->save();
+        $item->delete();
 
-    //     return response()->json(['message' => 'Inventory item deleted successfully']);
-    // }
+        return response()->json(['message' => 'Inventory item deleted successfully']);
+    }
 // public function serialranges(Request $request)
 // {
 //     $query = Inventory::whereNull('deleted_at');
@@ -670,28 +687,28 @@ public function destroy($id)
     }
 
 
-public function deleteSerial($serial_no)
-{
-    $serial = Inventory::where('from_serial', '<=', $serial_no)
-        ->where('to_serial', '>=', $serial_no)
-        ->whereNull('deleted_at')
-        ->first();
+// public function deleteSerial($serial_no)
+// {
+//     $serial = Inventory::where('from_serial', '<=', $serial_no)
+//         ->where('to_serial', '>=', $serial_no)
+//         ->whereNull('deleted_at')
+//         ->first();
 
-    if (!$serial) {
-        return response()->json(['message' => 'Serial not found in any range'], 404);
-    }
+//     if (!$serial) {
+//         return response()->json(['message' => 'Serial not found in any range'], 404);
+//     }
 
-    // Record deleted serial
-    \DB::table('deleted_serials')->insert([
-        'inventory_id'   => $serial->id,
-        'product_id'     => $serial->product_id,
-        // 'product_type_id'=> $serial->product_type_id,
-        'serial_no'      => $serial_no,
-        'deleted_at'     => now(),
-    ]);
+//     // Record deleted serial
+//     \DB::table('deleted_serials')->insert([
+//         'inventory_id'   => $serial->id,
+//         'product_id'     => $serial->product_id,
+//         // 'product_type_id'=> $serial->product_type_id,
+//         'serial_no'      => $serial_no,
+//         'deleted_at'     => now(),
+//     ]);
 
-    return response()->json(['message' => "Serial {$serial_no} deleted successfully."]);
-}
+//     return response()->json(['message' => "Serial {$serial_no} deleted successfully."]);
+// }
 
 
 
