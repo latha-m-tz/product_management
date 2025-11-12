@@ -19,6 +19,7 @@ class SparepartPurchaseItem extends Model
         'quantity',
         'warranty_status',
         'serial_no',
+        'group_index',
           'created_by',
            'updated_by',
            'deleted_by'

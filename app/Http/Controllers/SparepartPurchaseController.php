@@ -23,8 +23,8 @@ public function store(Request $request)
         'vendor_id' => 'required|integer|exists:vendors,id',
         'challan_no' => 'required|string|max:50|unique:sparepart_purchase,challan_no',
         'tracking_number' => 'nullable|string|max:100',
-        'challan_date' => ['required','before_or_equal:today'],
-        'received_date' => ['required','before_or_equal:today'],
+        'challan_date' => ['required', 'before_or_equal:today'],
+        'received_date' => ['required', 'before_or_equal:today'],
         'courier_name' => 'nullable|string|max:100',
         'items' => 'required|array|min:1',
         'items.*.product_id' => 'nullable|integer|exists:product,id',
@@ -34,16 +34,15 @@ public function store(Request $request)
         'items.*.serial_no' => 'nullable|string|max:100',
         'items.*.from_serial' => ['nullable', 'regex:/^\d{1,6}$/'],
         'items.*.to_serial' => ['nullable', 'regex:/^\d{1,6}$/'],
-            'document_recipient.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:2048',
+        'document_recipient.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:2048',
     ]);
- 
+
     DB::beginTransaction();
- 
+
     try {
         $recipientFiles = [];
-        $challanFiles = [];
- 
-        // Handle recipient documents
+
+        // ✅ Handle uploaded recipient documents
         if ($request->hasFile('document_recipient')) {
             foreach ($request->file('document_recipient') as $file) {
                 $filename = time() . '_' . uniqid() . '_' . $file->getClientOriginalName();
@@ -51,17 +50,8 @@ public function store(Request $request)
                 $recipientFiles[] = 'sparepart_images/recipients/' . $filename;
             }
         }
- 
-        // Handle challan documents
-        // if ($request->hasFile('document_challan')) {
-        //     foreach ($request->file('document_challan') as $file) {
-        //         $filename = time() . '_' . uniqid() . '_' . $file->getClientOriginalName();
-        //         $file->move(public_path('sparepart_images/challans'), $filename);
-        //         $challanFiles[] = 'sparepart_images/challans/' . $filename;
-        //     }
-        // }
- 
-        // Create the main purchase
+
+        // ✅ Create main purchase record
         $purchase = SparepartPurchase::create([
             'vendor_id' => $request->vendor_id,
             'challan_no' => $request->challan_no,
@@ -69,18 +59,19 @@ public function store(Request $request)
             'challan_date' => $request->challan_date,
             'received_date' => $request->received_date,
             'courier_name' => $request->courier_name,
-          'document_recipient' => $recipientFiles,
- 
+            'document_recipient' => $recipientFiles,
             'created_by' => auth()->id(),
         ]);
- 
+
         $serialsToInsert = [];
- 
-        foreach ($request->items as $item) {
-            $from = $item['from_serial'] ?? null;
-            $to = $item['to_serial'] ?? null;
- 
+
+        // ✅ Loop through items to prepare insert data
+        foreach ($request->items as $index => $item) {
+            $from = isset($item['from_serial']) ? intval($item['from_serial']) : null;
+            $to = isset($item['to_serial']) ? intval($item['to_serial']) : null;
+
             if ($from && $to) {
+                // 🔹 Add each serial in the given range
                 for ($i = $from; $i <= $to; $i++) {
                     $serialsToInsert[] = [
                         'purchase_id' => $purchase->id,
@@ -89,10 +80,14 @@ public function store(Request $request)
                         'quantity' => 1,
                         'warranty_status' => $item['warranty_status'] ?? null,
                         'serial_no' => $i,
+                        'from_serial' => $from,
+                        'to_serial' => $to,
+                        'group_index' => $index + 1, // ✅ assign unique group per range row
                         'created_by' => auth()->id(),
                     ];
                 }
             } else {
+                // 🔹 Non-range entries (manual serial or quantity)
                 $serialsToInsert[] = [
                     'purchase_id' => $purchase->id,
                     'product_id' => $item['product_id'] ?? null,
@@ -100,49 +95,67 @@ public function store(Request $request)
                     'quantity' => $item['quantity'],
                     'warranty_status' => $item['warranty_status'] ?? null,
                     'serial_no' => $item['serial_no'] ?? null,
+                    'from_serial' => $from,
+                    'to_serial' => $to,
+                    'group_index' => $index + 1,
                     'created_by' => auth()->id(),
                 ];
             }
         }
- 
-        // Check for duplicates in DB
-        $serialNumbers = array_map(fn($s) => $s['serial_no'], $serialsToInsert);
-        $duplicateSerials = SparepartPurchaseItem::whereIn('serial_no', $serialNumbers)->pluck('serial_no')->toArray();
- 
+
+        // ✅ Duplicate serial number check (for same product & sparepart)
+        $duplicateSerials = [];
+        foreach ($serialsToInsert as $s) {
+            if (empty($s['serial_no'])) continue;
+
+            $query = SparepartPurchaseItem::where('serial_no', $s['serial_no'])
+                ->where('sparepart_id', $s['sparepart_id']);
+
+            if (!empty($s['product_id'])) {
+                $query->where('product_id', $s['product_id']);
+            } else {
+                $query->whereNull('product_id');
+            }
+
+            if ($query->exists()) {
+                $duplicateSerials[] = $s['serial_no'];
+            }
+        }
+
         if (!empty($duplicateSerials)) {
+            $duplicateSerials = array_unique($duplicateSerials);
             DB::rollBack();
             return response()->json([
-                'message' => 'Duplicate serial numbers found',
+                'message' => 'The following serial numbers are already purchased: ' . implode(', ', $duplicateSerials),
                 'duplicates' => $duplicateSerials,
             ], 422);
         }
- 
-        // Insert all items
-        foreach ($serialsToInsert as $item) {
-            SparepartPurchaseItem::create($item);
+
+        // ✅ Insert all new serials into DB
+        foreach ($serialsToInsert as $record) {
+            SparepartPurchaseItem::create($record);
         }
- 
+
         DB::commit();
- 
+
         return response()->json([
             'message' => 'Spare part purchase saved successfully',
             'purchase_id' => $purchase->id,
             'tracking_number' => $purchase->tracking_number,
             'documents' => [
                 'recipients' => $recipientFiles,
-                // 'challans' => $challanFiles,
             ],
         ], 201);
- 
+
     } catch (\Throwable $e) {
         DB::rollBack();
         return response()->json([
             'message' => 'Error saving purchase',
             'error' => $e->getMessage(),
+            'line' => $e->getLine(),
         ], 500);
     }
 }
-
 
 
 
@@ -235,7 +248,11 @@ public function edit($id)
 {
     $purchase = SparepartPurchase::with(['items.product', 'items.sparepart', 'vendor'])
         ->findOrFail($id);
- 
+
+    $recipientFiles = is_string($purchase->document_recipient)
+        ? json_decode($purchase->document_recipient, true)
+        : ($purchase->document_recipient ?? []);
+
     $response = [
         'id' => $purchase->id,
         'vendor_id' => $purchase->vendor_id,
@@ -245,19 +262,13 @@ public function edit($id)
         'courier_name' => $purchase->courier_name,
         'challan_date' => $purchase->challan_date ? \Carbon\Carbon::parse($purchase->challan_date)->format('d-m-Y') : null,
         'received_date' => $purchase->received_date ? \Carbon\Carbon::parse($purchase->received_date)->format('d-m-Y') : null,
-        'courier_name' => $purchase->courier_name,
- 
-    'document_recipient' => is_string($purchase->document_recipient)
-        ? json_decode($purchase->document_recipient, true)
-        : ($purchase->document_recipient ?? []),
- 
-    // 'document_challan' => is_string($purchase->document_challan)
-    //     ? json_decode($purchase->document_challan, true)
-    //     : ($purchase->document_challan ?? []),
- 
- 
-        // Fetch items with related product and sparepart info
+        'document_recipient' => $recipientFiles,
+
         'items' => $purchase->items->map(function ($item) {
+            // Ensure from_serial and to_serial are integers if present
+            $fromSerial = $item->from_serial ?? $item->serial_no;
+            $toSerial = $item->to_serial ?? $item->serial_no;
+
             return [
                 'id' => $item->id,
                 // 'product_id' => $item->product_id,
@@ -267,20 +278,21 @@ public function edit($id)
                 'quantity' => $item->quantity,
                 'warranty_status' => $item->warranty_status,
                 'serial_no' => $item->serial_no,
-                'from_serial' => $item->from_serial,
-                'to_serial' => $item->to_serial,
+                'from_serial' => $fromSerial,
+                'to_serial' => $toSerial,
             ];
         })->values(),
     ];
- 
+
     return response()->json($response);
 }
+
 
 
 public function update(Request $request, $id)
 {
     $purchase = SparepartPurchase::findOrFail($id);
- 
+
     $request->validate([
         'vendor_id' => 'required|integer|exists:vendors,id',
         'challan_no' => [
@@ -295,7 +307,6 @@ public function update(Request $request, $id)
         'courier_name' => 'nullable|string|max:100',
         'items' => 'nullable|array|min:1',
         'items.*.id' => 'nullable|integer',
-        // 'items.*.product_id' => 'nullable|integer|exists:product,id',
         'items.*.sparepart_id' => 'nullable|integer|exists:spareparts,id',
         'items.*.quantity' => 'required|integer|min:1',
         'items.*.warranty_status' => 'nullable|string|max:50',
@@ -305,47 +316,34 @@ public function update(Request $request, $id)
         'document_recipient' => 'nullable|array',
         'document_recipient.*' => 'file|mimes:jpg,jpeg,png,pdf|max:2048',
         'document_challan' => 'nullable|array',
-'document_challan.*' => 'file|mimes:jpg,jpeg,png,pdf|max:2048', // max 10 MB per file
+        'document_challan.*' => 'file|mimes:jpg,jpeg,png,pdf|max:2048', // max 2 MB per file
     ]);
- 
+
     DB::beginTransaction();
- 
+
     try {
+        /** --------------------------
+         * Handle uploaded files
+         * -------------------------- */
+        $recipientFiles = $purchase->document_recipient ?? [];
+        $challanFiles = $purchase->document_challan ?? [];
 
-$recipientFiles = $purchase->document_recipient ?? [];
-$challanFiles = $purchase->document_challan ?? [];
- 
-if ($request->filled('removed_recipient_files')) {
-    $removedRecipientFiles = json_decode($request->removed_recipient_files, true);
- 
-    $recipientFiles = array_values(array_diff($recipientFiles, $removedRecipientFiles));
-}
- 
-if ($request->filled('removed_recipient_files')) {
-    $removedRecipientFiles = json_decode($request->removed_recipient_files, true);
-    $recipientFiles = array_values(array_diff($recipientFiles, $removedRecipientFiles));
-}
- 
+        if ($request->filled('removed_recipient_files')) {
+            $removedRecipientFiles = json_decode($request->removed_recipient_files, true);
+            $recipientFiles = array_values(array_diff($recipientFiles, $removedRecipientFiles));
+        }
 
- 
-// ✅ Handle new recipient documents (keep old + add new)
-if ($request->hasFile('document_recipient')) {
-    foreach ($request->file('document_recipient') as $file) {
-        $filename = time() . '_' . uniqid() . '_' . $file->getClientOriginalName();
-        $file->move(public_path('sparepart_images/recipients'), $filename);
-        $recipientFiles[] = 'sparepart_images/recipients/' . $filename;
-    }
-}
- 
-// // ✅ Handle new challan documents (keep old + add new)
-// if ($request->hasFile('document_challan')) {
-//     foreach ($request->file('document_challan') as $file) {
-//         $filename = time() . '_' . uniqid() . '_' . $file->getClientOriginalName();
-//         $file->move(public_path('sparepart_images/challans'), $filename);
-//         $challanFiles[] = 'sparepart_images/challans/' . $filename;
-//     }
-// }
- 
+        if ($request->hasFile('document_recipient')) {
+            foreach ($request->file('document_recipient') as $file) {
+                $filename = time() . '_' . uniqid() . '_' . $file->getClientOriginalName();
+                $file->move(public_path('sparepart_images/recipients'), $filename);
+                $recipientFiles[] = 'sparepart_images/recipients/' . $filename;
+            }
+        }
+
+        /** --------------------------
+         * Update main purchase
+         * -------------------------- */
         $purchase->update([
             'vendor_id' => $request->vendor_id,
             'challan_no' => $request->challan_no,
@@ -356,17 +354,20 @@ if ($request->hasFile('document_recipient')) {
             'document_recipient' => $recipientFiles,
             'updated_by' => auth()->id(),
         ]);
- 
+
         if (!empty($request->deleted_ids)) {
             SparepartPurchaseItem::whereIn('id', $request->deleted_ids)->delete();
         }
- 
+
+        /** --------------------------
+         * Process each item
+         * -------------------------- */
         $totalQuantity = 0;
- 
+        $allSubmittedSerials = [];
+
         foreach ($request->items ?? [] as $item) {
-            $serials = $item['serials'] ?? [];
-            $serials = array_filter($serials); // remove empty strings
- 
+            $serials = array_filter($item['serials'] ?? []); // remove empty values
+
             // Check duplicates in request
             $duplicateInRequest = collect($serials)->duplicates()->all();
             if (!empty($duplicateInRequest)) {
@@ -374,34 +375,30 @@ if ($request->hasFile('document_recipient')) {
                     'errors' => ['items' => ['Duplicate serial(s) in request: ' . implode(', ', $duplicateInRequest)]]
                 ], 422);
             }
- 
+
             // Check duplicates in DB excluding current purchase
             if (count($serials) > 0) {
                 $existingSerials = SparepartPurchaseItem::whereIn('serial_no', $serials)
                     ->where('purchase_id', '!=', $purchase->id)
                     ->pluck('serial_no')
                     ->toArray();
- 
+
                 if (!empty($existingSerials)) {
                     return response()->json([
                         'errors' => ['items' => ['Serial(s) already exist in DB: ' . implode(', ', $existingSerials)]]
                     ], 422);
                 }
             }
- 
-            SparepartPurchaseItem::where('purchase_id', $purchase->id)
-                ->where('sparepart_id', $item['sparepart_id'])
-                // ->when($item['product_id'], fn($q) => $q->where('product_id', $item['product_id']))
-                ->whereNotIn('serial_no', $serials)
-                ->delete();
- 
+
+            // Add serials to global tracker
+            $allSubmittedSerials = array_merge($allSubmittedSerials, $serials);
+
             if (count($serials) > 0) {
                 foreach ($serials as $serial) {
                     SparepartPurchaseItem::updateOrCreate(
                         [
                             'purchase_id' => $purchase->id,
                             'sparepart_id' => $item['sparepart_id'],
-                            // 'product_id' => $item['product_id'] ?? null,
                             'serial_no' => $serial,
                         ],
                         [
@@ -413,11 +410,11 @@ if ($request->hasFile('document_recipient')) {
                 }
                 $totalQuantity += count($serials);
             } else {
+                // Non-serialized sparepart
                 SparepartPurchaseItem::updateOrCreate(
                     [
                         'purchase_id' => $purchase->id,
                         'sparepart_id' => $item['sparepart_id'],
-                        'product_id' => $item['product_id'] ?? null,
                         'serial_no' => null,
                     ],
                     [
@@ -429,30 +426,96 @@ if ($request->hasFile('document_recipient')) {
                 $totalQuantity += $item['quantity'] ?? 0;
             }
         }
- 
+
+        /** --------------------------
+         * Delete only unsubmitted serials (fix for multiple ranges)
+         * -------------------------- */
+        if (!empty($allSubmittedSerials)) {
+            SparepartPurchaseItem::where('purchase_id', $purchase->id)
+                ->whereNotIn('serial_no', $allSubmittedSerials)
+                ->delete();
+        }
+
         $purchase->update(['quantity' => $totalQuantity]);
- 
-     
         $purchase->load('items.sparepart', 'items.product');
- 
-        $purchaseItems = $purchase->items
+
+        /** --------------------------
+         * Prepare response items
+         * -------------------------- */
+        $purchaseItems = collect();
+
+        $purchase->items
             ->groupBy(fn($item) => $item->sparepart_id . '_' . ($item->product_id ?? 'null'))
-            ->map(fn($group) => [
-                'id' => $group->first()->id,
-                'sparepart_id' => $group->first()->sparepart_id,
-                // 'product_id' => $group->first()->product_id,
-                'qty' => $group->pluck('serial_no')->filter()->count() ?: $group->first()->quantity,
-                'warranty_status' => $group->first()->warranty_status,
-                'from_serial' => $group->pluck('serial_no')->filter()->sort()->values()->first() ?? null,
-                'to_serial' => $group->pluck('serial_no')->filter()->sort()->values()->last() ?? null,
-                'serials' => $group->pluck('serial_no')->filter()->sort()->values()->toArray(),
-            ])->values();
- 
+            ->each(function ($group) use ($purchaseItems) {
+                $sparepartId = $group->first()->sparepart_id;
+                $productId = $group->first()->product_id;
+                $warrantyStatus = $group->first()->warranty_status;
+
+                // Sort serial numbers numerically
+                $serials = $group->pluck('serial_no')->filter()->sort(function ($a, $b) {
+                    return (int)preg_replace('/\D/', '', $a) <=> (int)preg_replace('/\D/', '', $b);
+                })->values()->toArray();
+
+                if (empty($serials)) {
+                    $purchaseItems->push([
+                        'id' => $group->first()->id,
+                        'sparepart_id' => $sparepartId,
+                        'product_id' => $productId,
+                        'qty' => $group->first()->quantity,
+                        'warranty_status' => $warrantyStatus,
+                        'from_serial' => null,
+                        'to_serial' => null,
+                        'serials' => [],
+                    ]);
+                    return;
+                }
+
+                // Split serials into contiguous ranges
+                $range = [$serials[0]];
+                for ($i = 1; $i < count($serials); $i++) {
+                    $prevNum = (int)preg_replace('/\D/', '', $serials[$i - 1]);
+                    $currNum = (int)preg_replace('/\D/', '', $serials[$i]);
+
+                    if ($currNum === $prevNum + 1) {
+                        $range[] = $serials[$i];
+                    } else {
+                        // Save current range
+                        $purchaseItems->push([
+                            'id' => $group->first()->id,
+                            'sparepart_id' => $sparepartId,
+                            'product_id' => $productId,
+                            'qty' => count($range),
+                            'warranty_status' => $warrantyStatus,
+                            'from_serial' => $range[0],
+                            'to_serial' => end($range),
+                            'serials' => $range,
+                        ]);
+                        // Start a new range
+                        $range = [$serials[$i]];
+                    }
+                }
+
+                // Push last range
+                if (!empty($range)) {
+                    $purchaseItems->push([
+                        'id' => $group->first()->id,
+                        'sparepart_id' => $sparepartId,
+                        'product_id' => $productId,
+                        'qty' => count($range),
+                        'warranty_status' => $warrantyStatus,
+                        'from_serial' => $range[0],
+                        'to_serial' => end($range),
+                        'serials' => $range,
+                    ]);
+                }
+            });
+
+        $purchaseItems = $purchaseItems->values();
+
         DB::commit();
- 
+
         return response()->json([
             'message' => 'Spare part purchase updated successfully',
-            // 'purchase_id' => $purchase->id,
             'quantity' => $totalQuantity,
             'items' => $purchaseItems,
             'documents' => [
@@ -460,10 +523,13 @@ if ($request->hasFile('document_recipient')) {
                 // 'challans' => $challanFiles,
             ],
         ], 200);
- 
+
     } catch (\Throwable $e) {
         DB::rollBack();
-        return response()->json(['message' => 'Update failed', 'error' => $e->getMessage()], 500);
+        return response()->json([
+            'message' => 'Update failed',
+            'error' => $e->getMessage(),
+        ], 500);
     }
 }
 
@@ -776,9 +842,11 @@ public function getSeriesSpareparts($series)
     $sparepartIds = collect($sparepartRequirements)->pluck('id')->toArray();
     $spareparts = Sparepart::whereIn('id', $sparepartIds)->get();
 
-    // Count all assembled VCIs (for usage calculation)
+    // Count all assembled VCIs for this product only
     $assembledVCIs = DB::table('inventory')
         ->whereNull('deleted_by')
+        ->whereNull('deleted_at')
+        ->where('product_id', $product->id)
         ->count();
 
     // Map spareparts with quantities
@@ -811,6 +879,7 @@ public function getSeriesSpareparts($series)
         'spare_parts' => $sparepartsMapped,
     ]);
 }
+
 
 
 }

@@ -173,9 +173,7 @@ $sparepart->update($validated);
         }
     }
 
-    /**
-     * List all spareparts.
-     */
+
 public function index()
 {
     // Fetch all spareparts once
@@ -183,26 +181,45 @@ public function index()
 
     // Map and compute available quantities
     $sparepartsWithAvailableQty = $spareparts->map(function ($part) {
-        // ✅ Total purchased quantity
+        // ✅ Total purchased quantity for this sparepart
         $purchasedQty = \DB::table('sparepart_purchase_items')
             ->where('sparepart_id', $part->id)
             ->sum('quantity');
 
-        // ✅ Total assembled VCIs (active ones)
-        $assembledVCIs = \DB::table('inventory')
-            ->whereNull('deleted_by')
-            ->count();
+        // ✅ Count assembled VCIs that use this sparepart
+        // This assumes sparepart_usages or required_per_vci indicates how many are used per product
+        $usedQty = 0;
 
-        // ✅ Required per VCI (default = 1 if null)
-        $requiredPerVCI = $part->required_per_vci ?? 1;
+        // If sparepart_usages is JSON array [{id, required_quantity}], decode and sum
+        $usages = json_decode($part->sparepart_usages, true) ?? [];
+        foreach ($usages as $usage) {
+            $productId = $usage['product_id'] ?? null;
+            $requiredPerProduct = $usage['required_quantity'] ?? $part->required_per_vci ?? 1;
 
-        // ✅ Used quantity = assembled count * required per VCI
-        $usedQty = $assembledVCIs * $requiredPerVCI;
+            if ($productId) {
+                $assembledVCIs = \DB::table('inventory')
+                    ->whereNull('deleted_by')
+                    ->whereNull('deleted_at')
+                    ->where('product_id', $productId)
+                    ->count();
 
-        // ✅ Available quantity = purchased - used (never negative)
+                $usedQty += $assembledVCIs * $requiredPerProduct;
+            }
+        }
+
+        // If no specific usages defined, fallback to required_per_vci * total assembled VCIs
+        if (empty($usages)) {
+            $assembledVCIs = \DB::table('inventory')
+                ->whereNull('deleted_by')
+                ->whereNull('deleted_at')
+                ->count();
+
+            $requiredPerVCI = $part->required_per_vci ?? 1;
+            $usedQty = $assembledVCIs * $requiredPerVCI;
+        }
+
         $availableQty = max($purchasedQty - $usedQty, 0);
 
-        // ✅ Return all important fields
         return [
             'id' => $part->id,
             'code' => $part->code,
@@ -223,9 +240,7 @@ public function index()
 }
 
 
-    /**
-     * Delete sparepart from purchase items.
-     */
+
     public function deleteItem($purchase_id, $sparepart_id)
     {
         $deleted = SparepartPurchaseItem::where('purchase_id', $purchase_id)
