@@ -16,7 +16,17 @@ class VendorController extends Controller
     public function Vendorstore(Request $request)
     {
         $validator = Validator::make($request->all(), [
-           'vendor'=> 'required|string|max:255|unique:vendors,vendor',
+        'vendor'        => [
+            'required', 'string', 'max:255',
+            function ($attribute, $value, $fail) {
+                $exists = Vendor::where('vendor', $value)
+                    ->whereNull('deleted_at')
+                    ->exists();
+                if ($exists) {
+                    $fail("The $attribute has already been taken.");
+                }
+            },
+        ],
             'gst_no'         => 'nullable|string|max:15|unique:vendors,gst_no',
             'email'          => 'nullable|email|max:255|unique:vendors,email',
             'pincode'        => 'nullable|digits:6',
@@ -57,7 +67,7 @@ class VendorController extends Controller
                 'status'         => 'Active',
                 'created_at'     => now(),
                 'updated_at'     => now(),
-                'created_by' => auth()->id() ?? 1,
+                'created_by' => auth()->id(),
 
 
             ]);

@@ -20,9 +20,9 @@ class SparepartPurchaseItem extends Model
         'warranty_status',
         'serial_no',
         'group_index',
-          'created_by',
-           'updated_by',
-           'deleted_by'
+        'created_by',
+        'updated_by',
+        'deleted_by'
 
     ];
 
@@ -40,12 +40,10 @@ class SparepartPurchaseItem extends Model
     {
         return $this->belongsTo(product::class, 'product_id');
     }
-    public function product()
+public function product()
 {
-    return $this->belongsTo(Product::class, 'product_id'); // matches your products table/model
+    return $this->belongsTo(Sparepart::class, 'product_id');
 }
-
-// Product Type relation (if separate table)
 public function productType()
 {
     return $this->belongsTo(ProductType::class, 'product_type_id');
