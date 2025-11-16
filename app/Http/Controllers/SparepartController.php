@@ -13,9 +13,7 @@ use Illuminate\Database\QueryException;
 
 class SparepartController extends Controller
 {
-    /**
-     * Store a newly created sparepart.
-     */
+   
    public function store(Request $request)
 {
     $validated = $request->validate([
@@ -38,7 +36,7 @@ class SparepartController extends Controller
         ],
         'sparepart_type' => 'required|string|max:255',
         'sparepart_usages' => 'nullable|string|max:255',
-        'required_per_vci' => 'nullable|integer|min:1', // NEW
+        'required_per_vci' => 'nullable|integer|min:1', 
     ]);
 
     // Set default value if not provided
@@ -52,9 +50,7 @@ class SparepartController extends Controller
     ], 201);
 }
 
-    /**
-     * Edit a sparepart by ID.
-     */
+   
     public function edit($id)
     {
         $sparepart = Sparepart::find($id);
@@ -70,9 +66,7 @@ class SparepartController extends Controller
         ], 200);
     }
 
-    /**
-     * Update an existing sparepart.
-     */
+   
     public function update(Request $request, $id)
     {
         $sparepart = Sparepart::find($id);
@@ -176,68 +170,75 @@ $sparepart->update($validated);
 
 public function index()
 {
-    // Fetch all spareparts once
     $spareparts = \App\Models\Sparepart::all();
 
-    // Map and compute available quantities
     $sparepartsWithAvailableQty = $spareparts->map(function ($part) {
-        // ✅ Total purchased quantity for this sparepart
-        $purchasedQty = \DB::table('sparepart_purchase_items')
+        // 🔹 1. Total purchased quantity for this spare part
+        $purchasedQty = (int) \DB::table('sparepart_purchase_items')
             ->where('sparepart_id', $part->id)
             ->sum('quantity');
 
-        // ✅ Count assembled VCIs that use this sparepart
-        // This assumes sparepart_usages or required_per_vci indicates how many are used per product
         $usedQty = 0;
 
-        // If sparepart_usages is JSON array [{id, required_quantity}], decode and sum
-        $usages = json_decode($part->sparepart_usages, true) ?? [];
-        foreach ($usages as $usage) {
-            $productId = $usage['product_id'] ?? null;
-            $requiredPerProduct = $usage['required_quantity'] ?? $part->required_per_vci ?? 1;
+        // 🔹 2. Check if the sparepart has defined usages (JSON array)
+        $usages = json_decode($part->sparepart_usages, true);
 
-            if ($productId) {
-                $assembledVCIs = \DB::table('inventory')
-                    ->whereNull('deleted_by')
-                    ->whereNull('deleted_at')
-                    ->where('product_id', $productId)
-                    ->count();
+        if (is_array($usages) && !empty($usages)) {
+            foreach ($usages as $usage) {
+                $productId = $usage['product_id'] ?? null;
+                $requiredPerProduct = (int) ($usage['required_quantity'] ?? $part->required_per_vci ?? 1);
 
-                $usedQty += $assembledVCIs * $requiredPerProduct;
+                if ($productId) {
+                    // Count assembled VCIs for this product
+                    $assembledVCIs = \DB::table('inventory')
+                        ->whereNull('deleted_by')
+                        ->whereNull('deleted_at')
+                        ->where('product_id', $productId)
+                        ->count();
+
+                    // Add to used quantity
+                    $usedQty += $assembledVCIs * $requiredPerProduct;
+                }
             }
-        }
-
-        // If no specific usages defined, fallback to required_per_vci * total assembled VCIs
-        if (empty($usages)) {
+        } else {
+            // 🔹 3. If no specific usage, fallback to required_per_vci * all assembled VCIs
             $assembledVCIs = \DB::table('inventory')
                 ->whereNull('deleted_by')
                 ->whereNull('deleted_at')
                 ->count();
 
-            $requiredPerVCI = $part->required_per_vci ?? 1;
+            $requiredPerVCI = (int) ($part->required_per_vci ?? 1);
             $usedQty = $assembledVCIs * $requiredPerVCI;
         }
 
-        $availableQty = max($purchasedQty - $usedQty, 0);
+        // 🔹 4. Calculate available quantity correctly
+        $availableQty = $purchasedQty - $usedQty;
+        if ($availableQty < 0) {
+            $availableQty = 0;
+        }
 
+        // 🔹 5. Return consistent structure
         return [
             'id' => $part->id,
             'code' => $part->code,
             'name' => $part->name,
             'sparepart_type' => $part->sparepart_type,
             'sparepart_usages' => $part->sparepart_usages,
-            'required_per_vci' => $part->required_per_vci,
+            'required_per_vci' => (int) ($part->required_per_vci ?? 1),
+            'purchased_quantity' => $purchasedQty,
+            'used_quantity' => $usedQty,
             'available_quantity' => $availableQty,
             'created_at' => $part->created_at,
             'updated_at' => $part->updated_at,
         ];
     });
 
-    // ✅ Send response back to frontend
+    // 🔹 6. Return JSON response
     return response()->json([
         'spareparts' => $sparepartsWithAvailableQty->values(),
     ], 200);
 }
+
 
 
 

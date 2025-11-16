@@ -44,7 +44,7 @@ public function store(Request $request)
         'vendor_id' => 'required|exists:vendors,id',
         'challan_no' => 'required|string|max:50',
         'challan_date' => 'required|date',
-        'tracking_no' => 'nullable|string|max:50', // <-- added tracking number
+        'tracking_no' => 'nullable|string|max:50', 
 
         'receipt_files.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:2048',
 
@@ -145,7 +145,6 @@ public function show($id)
         }
     }
 
-    // Convert item upload images to URLs
     foreach ($serviceVCI->items as $item) {
         $item->upload_image = $item->upload_image
             ? asset('storage/' . $item->upload_image)
@@ -160,6 +159,7 @@ public function show($id)
         'vendor_name' => $serviceVCI->vendor->vendor ?? null, // vendor name
         'challan_no' => $serviceVCI->challan_no,
         'challan_date' => $serviceVCI->challan_date,
+        'tracking_no' =>$serviceVCI->tracking_no,
         'status' => $serviceVCI->status,
         'receipt_files' => $serviceVCI->receipt_files,
         'receipt_files_urls' => $serviceVCI->receipt_files_urls,
@@ -178,15 +178,21 @@ public function update(Request $request, $id)
         'vendor_id' => 'required|exists:vendors,id',
         'challan_no' => 'required|string|max:50',
         'challan_date' => 'required|date',
+        'tracking_no' => 'nullable|string',
         'status' => 'nullable|string|max:50',
+
+        // Receipt files with validation
         'receipt_files.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:2048',
 
+        // Items
         'items' => 'required|array|min:1',
         'items.*.id' => 'nullable|integer|exists:service_vci_items,id',
         'items.*.product_id' => 'required|integer|exists:product,id',
         'items.*.vci_serial_no' => 'required|string|max:50',
         'items.*.status' => 'nullable|string|max:50',
         'items.*.remarks' => 'nullable|string|max:255',
+
+        // No restrictions for upload_image
         'items.*.upload_image' => 'nullable',
     ]);
 
@@ -194,54 +200,79 @@ public function update(Request $request, $id)
         return response()->json(['errors' => $validator->errors()], 422);
     }
 
-    // Handle receipt files
+    // ---------------------------
+    // HANDLE RECEIPT FILES
+    // ---------------------------
     $receiptFiles = $serviceVCI->receipt_files ?? [];
+
     if ($request->hasFile('receipt_files')) {
+
         // Delete old files
         foreach ($receiptFiles as $file) {
             if (Storage::disk('public')->exists($file)) {
                 Storage::disk('public')->delete($file);
             }
         }
+
+        // Store new files
         $receiptFiles = [];
         foreach ($request->file('receipt_files') as $file) {
             $receiptFiles[] = $file->store('uploads/service_vci/receipts', 'public');
         }
     }
 
-    // Update main service
+    // ---------------------------
+    // UPDATE MAIN SERVICE
+    // ---------------------------
     $serviceVCI->update([
         'vendor_id' => $request->vendor_id,
         'challan_no' => $request->challan_no,
         'challan_date' => $request->challan_date,
+        'tracking_no' => $request->tracking_no,
         'status' => $request->status ?? $serviceVCI->status,
         'receipt_files' => $receiptFiles,
     ]);
 
-    // Handle items
+    // ---------------------------
+    // HANDLE ITEMS (DELETE REMOVED)
+    // ---------------------------
     $existingItemIds = $serviceVCI->items()->pluck('id')->toArray();
     $incomingItemIds = collect($request->items)->pluck('id')->filter()->toArray();
     $itemsToDelete = array_diff($existingItemIds, $incomingItemIds);
 
     if (!empty($itemsToDelete)) {
         $itemsToDeleteModels = VCIServiceItems::whereIn('id', $itemsToDelete)->get();
+
         foreach ($itemsToDeleteModels as $item) {
             if ($item->upload_image && Storage::disk('public')->exists($item->upload_image)) {
                 Storage::disk('public')->delete($item->upload_image);
             }
         }
+
         VCIServiceItems::whereIn('id', $itemsToDelete)->delete();
     }
 
-    // Update or create items
+    // ---------------------------
+    // UPDATE OR CREATE ITEMS
+    // ---------------------------
     foreach ($request->items as $item) {
-        $uploadPath = $item['upload_image'] ?? null;
+
+        $uploadPath = null;
+
+        // If new file uploaded
         if (isset($item['upload_image']) && $item['upload_image'] instanceof \Illuminate\Http\UploadedFile) {
             $uploadPath = $item['upload_image']->store('uploads/service_vci/items', 'public');
         }
 
-        if (isset($item['id'])) {
+        // If existing full URL -> convert to relative storage path
+        elseif (!empty($item['upload_image']) && is_string($item['upload_image'])) {
+            $uploadPath = str_replace(url('storage') . '/', '', $item['upload_image']);
+        }
+
+        // UPDATE
+        if (!empty($item['id'])) {
             $existingItem = VCIServiceItems::find($item['id']);
+
             if ($existingItem) {
                 $existingItem->update([
                     'product_id' => $item['product_id'],
@@ -251,7 +282,10 @@ public function update(Request $request, $id)
                     'upload_image' => $uploadPath ?? $existingItem->upload_image,
                 ]);
             }
-        } else {
+        }
+
+        // CREATE
+        else {
             VCIServiceItems::create([
                 'service_vci_id' => $serviceVCI->id,
                 'product_id' => $item['product_id'],
@@ -268,6 +302,7 @@ public function update(Request $request, $id)
 
     return response()->json($serviceVCI, 200);
 }
+
 
 
 

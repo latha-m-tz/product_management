@@ -13,6 +13,7 @@ protected $fillable = [
     'vendor_id',
     'challan_no',
     'challan_date',
+    'tracking_no',
     'receipt_files',      
     'created_by',
     'updated_by',

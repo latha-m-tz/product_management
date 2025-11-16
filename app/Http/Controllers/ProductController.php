@@ -16,15 +16,12 @@ class ProductController extends Controller
 public function index()
 {
     $products = Product::whereNull('deleted_at')
-        ->with(['productTypes']) // assuming relation name is productTypes
+        ->with(['productTypes'])
         ->get();
 
     $productsWithSpareparts = $products->map(function ($product) {
-
-        // Get sparepart requirements JSON: [{id, required_quantity}]
         $sparepartRequirements = $product->sparepart_requirements ?? [];
 
-        // Fetch spareparts by IDs
         $sparepartIds = collect($sparepartRequirements)->pluck('id')->toArray();
         $spareparts = Sparepart::whereIn('id', $sparepartIds)->get();
 
@@ -55,11 +52,16 @@ public function index()
             ];
         });
 
+        // ✅ Prefer the DB column if relation is empty
+        $typeName = $product->productTypes->isNotEmpty()
+            ? $product->productTypes->pluck('name')->implode(', ')
+            : ($product->product_type_name ?? '-');
+
         return [
             'id' => $product->id,
             'name' => $product->name,
             'requirement_per_product' => $product->requirement_per_product,
-'product_type_name' => $product->productTypes->pluck('name')->implode(', '),
+            'product_type_name' => $typeName,
             'product_types' => $product->productTypes,
             'spareparts' => $sparepartsMapped,
         ];
@@ -147,7 +149,7 @@ public function index()
             'requirement_per_product' => $validated['requirement_per_product'] ?? 0,
             'product_type_name' => $validated['product_type_name'] ?? null,
             'sparepart_requirements' => $validated['sparepart_requirements'] ?? [],
-            'created_by' => Auth::id() ?? 1,
+            'created_by' => Auth::id(),
         ]);
 
         return response()->json([
@@ -156,38 +158,39 @@ public function index()
         ], 201);
     }
 
-    // ✅ Update product & sparepart requirements JSON
-    public function update(Request $request, $id)
-    {
-        $product = Product::where('id', $id)->whereNull('deleted_at')->first();
+public function update(Request $request, $id)
+{
+    $product = Product::where('id', $id)->whereNull('deleted_at')->first();
 
-        if (!$product) {
-            return response()->json(['error' => 'Not found'], 404);
-        }
-
-        $validated = $request->validate([
-            'name' => [
-                'required',
-                Rule::unique('product', 'name')->ignore($id)->whereNull('deleted_at'),
-            ],
-            'requirement_per_product' => 'nullable|numeric|min:0',
-            'product_type_name' => 'nullable|string|max:255',
-            'sparepart_requirements' => 'nullable|array',
-        ]);
-
-        $product->update([
-            'name' => $validated['name'],
-            'requirement_per_product' => $validated['requirement_per_product'] ?? 0,
-            'product_type_name' => $validated['product_type_name'] ?? null,
-            'sparepart_requirements' => $validated['sparepart_requirements'] ?? [],
-            'updated_by' => Auth::id() ?? 1,
-        ]);
-
-        return response()->json([
-            'message' => 'Product updated successfully',
-            'data' => $product,
-        ]);
+    if (!$product) {
+        return response()->json(['error' => 'Not found'], 404);
     }
+
+    $validated = $request->validate([
+        'name' => [
+            'required',
+            Rule::unique('product', 'name')->ignore($id)->whereNull('deleted_at'),
+        ],
+        'requirement_per_product' => 'nullable|numeric|min:0',
+        'product_type_name' => 'nullable|string|max:255',
+        'sparepart_requirements' => 'nullable|array',
+    ]);
+
+    $product->update([
+        'name' => $validated['name'],
+        'requirement_per_product' => $validated['requirement_per_product'] ?? 0,
+        // ✅ simpler & safer assignment
+        'product_type_name' => $validated['product_type_name'] ?? null,
+        'sparepart_requirements' => $validated['sparepart_requirements'] ?? [],
+        'updated_by' => Auth::id() ?? 1,
+    ]);
+
+    return response()->json([
+        'message' => 'Product updated successfully',
+        'data' => $product,
+    ]);
+}
+
 
     // ✅ Soft delete
     public function destroy($id)

@@ -13,12 +13,13 @@ class TrackingTimelineController extends Controller
     public function show($serial_number)
     {
         // --- Spare Parts ---
-        $spareParts = SparepartPurchaseItem::with(['product', 'productType', 'purchase'])
+        $spareParts = SparepartPurchaseItem::with(['product', 'purchase'])
             ->leftJoin('sparepart_purchase as sp', 'sparepart_purchase_items.purchase_id', '=', 'sp.id')
             ->leftJoin('vendors as v', 'sp.vendor_id', '=', 'v.id')
             ->where('sparepart_purchase_items.serial_no', $serial_number)
             ->select(
                 'sparepart_purchase_items.*',
+                'sparepart_purchase_items.product_id',
                 'v.vendor as vendor_name',
                 'sp.challan_no',
                 'sp.challan_date'
@@ -27,11 +28,12 @@ class TrackingTimelineController extends Controller
             ->map(function ($item) {
                 return [
                     'id' => $item->id,
+                    'purchase_id'   => $item->purchase_id,
                     'serial_no' => $item->serial_no,
                     'quantity' => $item->quantity,
                     'warranty_status' => $item->warranty_status,
-                    'product_name' => $item->product?->name,
-                    'product_type' => $item->productType?->name,
+                    'product_name' => $item->sparepart?->name,
+                    // 'product_type' => $item->productType?->name,
                     'challan_no' => $item->challan_no,
                     'challan_date' => $item->challan_date,
                     'vendor_name' => $item->vendor_name, 
@@ -40,7 +42,6 @@ class TrackingTimelineController extends Controller
                 ];
             });
 
-        // --- Inventory ---
         $inventory = Inventory::with(['product', 'productType'])
             ->where('serial_no', $serial_number)
             ->get()
@@ -51,32 +52,47 @@ class TrackingTimelineController extends Controller
                     'firmware_version' => $item->firmware_version,
                     'tested_status' => $item->tested_status,
                     'product_name' => $item->product?->name,
-                    'product_type' => $item->productType?->name,
+                    'tested_by' =>$item->tested_by,
                     'created_at' => $item->created_at,
                     'updated_at' => $item->updated_at,
                 ];
             });
 
-        // --- VCI Service ---
-        $serviceVCI = VCIServiceItems::with(['product', 'productType', 'serviceVCI'])
+$serviceVCI = VCIServiceItems::with([
+        'product',         // product.name
+        'serviceVCI.vendor' // vendor name and challan info
+    ])
     ->where('vci_serial_no', $serial_number)
     ->get()
     ->map(function ($item) {
         return [
             'id'            => $item->id,
+
+            // From VCIService (parent)
             'challan_no'    => $item->serviceVCI?->challan_no,
             'challan_date'  => $item->serviceVCI?->challan_date,
-            'courier_name'        => $item->serviceVCI?->courier_name,
-            'from_place'    => $item->serviceVCI?->from_place,
-            'to_place'      => $item->serviceVCI?->to_place,
+            'tracking_no'   => $item->serviceVCI?->tracking_no,
+
+            // Product name
             'product_name'  => $item->product?->name,
-            'vendor_name'   => $item->vendor?->vendor,
+
+            // Vendor from VCIService
+            'vendor_name'   => $item->serviceVCI?->vendor?->vendor,
+
+            // Item fields
+            'status'        => $item->status,
+            'remarks'       => $item->remarks,
+            'urgent'        => $item->urgent,
+            'issue_found'   => $item->issue_found,
+            'receipt_files' => $item->receipt_files,
+
             'created_at'    => $item->created_at,
             'updated_at'    => $item->updated_at,
         ];
     });
-        // --- Sales ---
+
         $sales = Sale::with([
+            
             'customer:id,customer,email,mobile_no',
             'items:id,sale_id,serial_no,quantity,product_id',
             'items.inventory:id,serial_no,tested_status,product_id',
@@ -85,12 +101,12 @@ class TrackingTimelineController extends Controller
             $query->where('serial_no', $serial_number);
         })->get();
 
-        $saleDetails = $sales->map(function ($sale) use ($serial_number) {
-            // Filter items by serial number
-            $filteredItems = $sale->items->where('serial_no', $serial_number)->map(function ($item) {
-                return [
-                    'id' => $item->id,
-                    'serial_no' => $item->serial_no,
+$saleDetails = $sales->map(function ($sale) use ($serial_number) {
+    $filteredItems = $sale->items->where('serial_no', $serial_number)->map(function ($item) use ($sale) {
+        return [
+            'id' => $item->id,
+            'sale_id' => $sale->id,
+                                'serial_no' => $item->serial_no,
                     'quantity' => $item->quantity,
                     'product' => $item->product?->name,
                     'inventory' => $item->inventory ? [
@@ -123,7 +139,7 @@ class TrackingTimelineController extends Controller
             'spare_parts' => $spareParts,
             'inventory' => $inventory,
             'service_vci' => $serviceVCI,
-            'sale' => $saleDetails->values(), // reindex collection
+            'sale' => $saleDetails->values(), 
         ]);
     }
 }
