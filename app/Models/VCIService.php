@@ -3,9 +3,11 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class VCIService extends Model
 {
+        use SoftDeletes;
 
 protected $table = 'service_vci';
 
@@ -14,7 +16,10 @@ protected $fillable = [
     'challan_no',
     'challan_date',
     'tracking_no',
-    'receipt_files',      
+    'receipt_files',  
+    'cerated_at',
+    'updated_at',
+    'deleted_at',    
     'created_by',
     'updated_by',
     'deleted_by',

@@ -10,49 +10,96 @@ use Illuminate\Support\Facades\Validator;
 class CustomerController extends Controller
 {
     
-    public function store(Request $request)
-    {
-        
-        $validator = Validator::make($request->all(), [
-            'customer' => 'required|string|max:100',
-            'email' => 'nullable|email|max:50|unique:customers,email',
-            'gst_no' => 'nullable|string|max:15|unique:customers,gst_no',
+public function store(Request $request)
+{
+    $validated = $request->validate([
+        'customer' => [
+            'required',
+            'string',
+            'max:100',
+            function ($attribute, $value, $fail) {
+                $exists = Customer::where('customer', $value)
+                    ->whereNull('deleted_at')
+                    ->exists();
+                if ($exists) {
+                    $fail("The $attribute has already been taken.");
+                }
+            }
+        ],
 
-            'pincode' => 'nullable|digits:6',
-            'city' => 'required|string|max:100',
-            'state' => 'required|string|max:100',
-            'district' => 'required|string|max:100',
-            'address' => 'nullable|string',
-            'mobile_no' => 'nullable|string|max:15',
-            'status' => 'nullable|in:active,inactive',
-        ]);
+        'email' => [
+            'nullable', 'email', 'max:50',
+            function ($attribute, $value, $fail) {
+                if ($value) {
+                    $exists = Customer::where('email', $value)
+                        ->whereNull('deleted_at')
+                        ->exists();
+                    if ($exists) {
+                        $fail("The $attribute has already been taken.");
+                    }
+                }
+            }
+        ],
 
-        if ($validator->fails()) {
-            return response()->json([
-                'status' => 'error',
-                'errors' => $validator->errors(),
-            ], 422);
-        }
+        'gst_no' => [
+            'nullable', 'string', 'max:15',
+            function ($attribute, $value, $fail) {
+                if ($value) {
+                    $exists = Customer::where('gst_no', $value)
+                        ->whereNull('deleted_at')
+                        ->exists();
+                    if ($exists) {
+                        $fail("The $attribute has already been taken.");
+                    }
+                }
+            }
+        ],
 
-        $customer = Customer::create([
-            'customer' => $request->customer,
-            'gst_no' => $request->gst_no,
-            'email' => $request->email,
-            'pincode' => $request->pincode,
-            'city' => $request->city,
-            'state' => $request->state,
-            'district' => $request->district,
-            'address' => $request->address,
-            'mobile_no' => $request->mobile_no,
-            'status' => $request->status ?? 'active',
-            'created_by' => Auth::id() ?? 1, 
-        ]);
+        'mobile_no' => [
+            'nullable',
+            'string',
+            'max:15',
+            function ($attribute, $value, $fail) {
+                if ($value) {
+                    $exists = Customer::where('mobile_no', $value)
+                        ->whereNull('deleted_at')
+                        ->exists();
+                    if ($exists) {
+                        $fail("The mobile number has already been taken.");
+                    }
+                }
+            }
+        ],
 
-        return response()->json([
-            'status' => 'success',
-            'customer' => $customer,
-        ], 201);
-    }
+        'pincode'   => 'nullable|digits:6',
+        'city'      => 'required|string|max:100',
+        'state'     => 'required|string|max:100',
+        'district'  => 'required|string|max:100',
+        'address'   => 'nullable|string',
+        'status'    => 'nullable|in:active,inactive',
+    ]);
+
+    // Create customer
+    $customer = Customer::create([
+        'customer'   => $validated['customer'],
+        'email'      => $validated['email'] ?? null,
+        'gst_no'     => $validated['gst_no'] ?? null,
+        'mobile_no'  => $validated['mobile_no'] ?? null,
+        'pincode'    => $validated['pincode'] ?? null,
+        'city'       => $validated['city'],
+        'state'      => $validated['state'],
+        'district'   => $validated['district'],
+        'address'    => $validated['address'] ?? null,
+        'status'     => $validated['status'] ?? 'active',
+        'created_by' => Auth::id(),
+    ]);
+
+    return response()->json([
+        'status' => 'success',
+        'customer' => $customer,
+    ], 201);
+}
+
 
 
     public function edit($id)
@@ -83,38 +130,89 @@ public function update(Request $request, $id)
         ], 404);
     }
 
-    $validator = Validator::make($request->all(), [
-        'customer' => 'required|string|max:100',
-        'email' => 'nullable|email|max:50|unique:customers,email,' . $id,
-        'gst_no' => 'nullable|string|size:15|unique:customers,gst_no,' . $id,
-        'pincode' => 'nullable|digits:6',
-        'city' => 'required|string|max:100',
-        'state' => 'required|string|max:100',
-        'district' => 'required|string|max:100',
-        'address' => 'nullable|string',
-        'mobile_no' => 'nullable|string|max:15',
-        'status' => 'nullable|in:active,inactive',
+    $validated = $request->validate([
+
+        'customer' => [
+            'required',
+            'string',
+            'max:100',
+            function ($attribute, $value, $fail) use ($id) {
+                $exists = Customer::where('customer', $value)
+                    ->whereNull('deleted_at')
+                    ->where('id', '!=', $id)
+                    ->exists();
+                if ($exists) {
+                    $fail("The $attribute has already been taken.");
+                }
+            }
+        ],
+
+        'email' => [
+            'nullable', 'email', 'max:50',
+            function ($attribute, $value, $fail) use ($id) {
+                if ($value) {
+                    $exists = Customer::where('email', $value)
+                        ->whereNull('deleted_at')
+                        ->where('id', '!=', $id)
+                        ->exists();
+                    if ($exists) {
+                        $fail("The $attribute has already been taken.");
+                    }
+                }
+            }
+        ],
+
+        'gst_no' => [
+            'nullable', 'string', 'max:15',
+            function ($attribute, $value, $fail) use ($id) {
+                if ($value) {
+                    $exists = Customer::where('gst_no', $value)
+                        ->whereNull('deleted_at')
+                        ->where('id', '!=', $id)
+                        ->exists();
+                    if ($exists) {
+                        $fail("The $attribute has already been taken.");
+                    }
+                }
+            }
+        ],
+
+        'mobile_no' => [
+            'nullable', 'string', 'max:15',
+            function ($attribute, $value, $fail) use ($id) {
+                if ($value) {
+                    $exists = Customer::where('mobile_no', $value)
+                        ->whereNull('deleted_at')
+                        ->where('id', '!=', $id)
+                        ->exists();
+                    if ($exists) {
+                        $fail("The $attribute has already been taken.");
+                    }
+                }
+            }
+        ],
+
+        'pincode'   => 'nullable|digits:6',
+        'city'      => 'required|string|max:100',
+        'state'     => 'required|string|max:100',
+        'district'  => 'required|string|max:100',
+        'address'   => 'nullable|string',
+        'status'    => 'nullable|in:active,inactive',
     ]);
 
-    if ($validator->fails()) {
-        return response()->json([
-            'status' => 'error',
-            'errors' => $validator->errors(),
-        ], 422);
-    }
-
+    // Update customer
     $customer->update([
-        'customer' => $request->customer,
-        'gst_no' => $request->gst_no,
-        'email' => $request->email,
-        'pincode' => $request->pincode,
-        'city' => $request->city,
-        'state' => $request->state,
-        'district' => $request->district,
-        'address' => $request->address,
-        'mobile_no' => $request->mobile_no,
-        'status' => $request->status ?? 'active',
-        'updated_by' => Auth::id() ?? 1,
+        'customer'   => $validated['customer'],
+        'email'      => $validated['email'] ?? null,
+        'gst_no'     => $validated['gst_no'] ?? null,
+        'pincode'    => $validated['pincode'] ?? null,
+        'city'       => $validated['city'],
+        'state'      => $validated['state'],
+        'district'   => $validated['district'],
+        'address'    => $validated['address'] ?? null,
+        'mobile_no'  => $validated['mobile_no'] ?? null,
+        'status'     => $validated['status'] ?? 'active',
+        'updated_by' => Auth::id(),
     ]);
 
     return response()->json([
@@ -124,18 +222,22 @@ public function update(Request $request, $id)
     ], 200);
 }
 
+
+
 public function destroy($id)
 {
     try {
-       
-        $customer = Customer::findOrFail($id);
 
-        $userId = auth()->id() ?? 1; 
+        $customer = Customer::whereNull('deleted_at')->findOrFail($id);
 
+        $userId = Auth::id();
+
+        // Set who deleted it
         $customer->deleted_by = $userId;
         $customer->save();
 
-        $customer->delete(); 
+        // Soft delete
+        $customer->delete();
 
         return response()->json([
             'status' => 'success',
@@ -150,6 +252,7 @@ public function destroy($id)
         ], 500);
     }
 }
+
 
 public function index()
     {

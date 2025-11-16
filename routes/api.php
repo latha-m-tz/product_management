@@ -67,9 +67,9 @@ Route::prefix('product')->middleware(['jwt.auth'])->group(function() {
 
 Route::post('/vendors/new', [VendorController::class, 'Vendorstore'])->middleware('jwt.auth');
 Route::get('/{id}/edit', [VendorController::class, 'VendorEdit'])->middleware('jwt.auth');
-Route::put('/{id}', [VendorController::class, 'VendorUpdate']);
+Route::put('/{id}', [VendorController::class, 'VendorUpdate'])->middleware('jwt.auth');
 Route::get('/vendorsget', [VendorController::class, 'VendorList'])->middleware('jwt.auth');
-Route::get('/vendors/get/{id}', [VendorController::class, 'show']);
+Route::get('/vendors/get/{id}', [VendorController::class, 'show'])->middleware('jwt.auth');
 Route::delete('/vendors/{id}', [VendorController::class, 'destroy'])->middleware('jwt.auth');
 
 
@@ -154,13 +154,3 @@ Route::get('/products/{productId}/serials', [SalesController::class, 'getProduct
 Route::apiResource('technicians', TechnicianController::class)->middleware('jwt.auth');
 
 
-
-
-// Route::prefix('service-deliveries')->group(function () {
-//     Route::get('/', [ServiceVCIDeliveryController::class, 'index']);
-//     Route::get('/eligible', [ServiceVCIDeliveryController::class, 'eligibleItems']);
-//     Route::post('/', [ServiceVCIDeliveryController::class, 'store']);
-//     Route::get('/{id}', [ServiceVCIDeliveryController::class, 'show']);
-//     Route::put('/{id}', [ServiceVCIDeliveryController::class, 'update']);
-//     Route::delete('/{id}', [ServiceVCIDeliveryController::class, 'destroy']);
-// });

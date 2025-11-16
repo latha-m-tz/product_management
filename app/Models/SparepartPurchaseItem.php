@@ -4,12 +4,13 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class SparepartPurchaseItem extends Model
 {
     
      use HasFactory;
-
+    use SoftDeletes;
     protected $table = 'sparepart_purchase_items';
 
     protected $fillable = [

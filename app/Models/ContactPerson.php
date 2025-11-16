@@ -12,7 +12,7 @@ class ContactPerson extends Model
     
     protected $fillable = [
         'vendor_id', 'name', 'designation', 'mobile_no',
-         'email', 'status','is_main', 
+         'email', 'status','is_main', 'created_by','updated_by','deleted_by'
     ];
 
     protected $casts = [

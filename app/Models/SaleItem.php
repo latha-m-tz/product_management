@@ -5,10 +5,12 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use App\Models\Sale;
 use App\Models\Inventory;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class SaleItem extends Model
 {
-    
+            use SoftDeletes;
+
 
     protected $table = 'sale_items';
 
@@ -19,6 +21,10 @@ class SaleItem extends Model
         'serial_no',
         'created_at',
         'updated_at',
+        'deleted_at',
+        'created_by',
+        'updated_by',
+        'deleted_by'
     ];
 
     public function sale()

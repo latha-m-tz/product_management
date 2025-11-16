@@ -71,7 +71,6 @@ public function index()
 }
 
 
-    // ✅ Show one product with types & spare parts
     public function show($id)
     {
         $product = Product::where('id', $id)
@@ -124,7 +123,6 @@ public function index()
         ]);
     }
 
-    // ✅ Create new product with sparepart requirements (JSON)
     public function store(Request $request)
     {
         $validated = $request->validate([

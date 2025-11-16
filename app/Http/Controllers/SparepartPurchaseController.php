@@ -21,11 +21,29 @@ public function store(Request $request)
 {
     $request->validate([
         'vendor_id' => 'required|integer|exists:vendors,id',
-        'challan_no' => 'required|string|max:50|unique:sparepart_purchase,challan_no',
+
+        // ✅ SOFT DELETE SAFE CHALLAN UNIQUE CHECK
+        'challan_no' => [
+            'required',
+            'string',
+            'max:50',
+            function ($attribute, $value, $fail) {
+                $exists = DB::table('sparepart_purchase')
+                    ->where('challan_no', $value)
+                    ->whereNull('deleted_at')  // 👈 soft delete logic
+                    ->exists();
+
+                if ($exists) {
+                    $fail("The $attribute has already been taken.");
+                }
+            }
+        ],
+
         'tracking_number' => 'nullable|string|max:100',
         'challan_date' => ['required', 'before_or_equal:today'],
         'received_date' => ['required', 'before_or_equal:today'],
         'courier_name' => 'nullable|string|max:100',
+
         'items' => 'required|array|min:1',
         'items.*.product_id' => 'nullable|integer|exists:product,id',
         'items.*.sparepart_id' => 'nullable|integer|exists:spareparts,id',
@@ -34,6 +52,7 @@ public function store(Request $request)
         'items.*.serial_no' => 'nullable|string|max:100',
         'items.*.from_serial' => ['nullable', 'regex:/^\d{1,6}$/'],
         'items.*.to_serial' => ['nullable', 'regex:/^\d{1,6}$/'],
+
         'document_recipient.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:2048',
     ]);
 
@@ -42,7 +61,7 @@ public function store(Request $request)
     try {
         $recipientFiles = [];
 
-        // ✅ Handle uploaded recipient documents
+        // Upload recipient files
         if ($request->hasFile('document_recipient')) {
             foreach ($request->file('document_recipient') as $file) {
                 $filename = time() . '_' . uniqid() . '_' . $file->getClientOriginalName();
@@ -51,7 +70,7 @@ public function store(Request $request)
             }
         }
 
-        // ✅ Create main purchase record
+        // Create main purchase entry
         $purchase = SparepartPurchase::create([
             'vendor_id' => $request->vendor_id,
             'challan_no' => $request->challan_no,
@@ -65,14 +84,15 @@ public function store(Request $request)
 
         $serialsToInsert = [];
 
-        // ✅ Loop through items to prepare insert data
         foreach ($request->items as $index => $item) {
-            $from = isset($item['from_serial']) ? intval($item['from_serial']) : null;
-            $to = isset($item['to_serial']) ? intval($item['to_serial']) : null;
+
+            $from = $item['from_serial'] ?? null;
+            $to   = $item['to_serial'] ?? null;
 
             if ($from && $to) {
-                // 🔹 Add each serial in the given range
-                for ($i = $from; $i <= $to; $i++) {
+
+                // Range serial insert
+                for ($i = intval($from); $i <= intval($to); $i++) {
                     $serialsToInsert[] = [
                         'purchase_id' => $purchase->id,
                         'product_id' => $item['product_id'] ?? null,
@@ -82,12 +102,14 @@ public function store(Request $request)
                         'serial_no' => $i,
                         'from_serial' => $from,
                         'to_serial' => $to,
-                        'group_index' => $index + 1, // ✅ assign unique group per range row
+                        'group_index' => $index + 1,
                         'created_by' => auth()->id(),
                     ];
                 }
+
             } else {
-                // 🔹 Non-range entries (manual serial or quantity)
+
+                // Manual serial / no-range
                 $serialsToInsert[] = [
                     'purchase_id' => $purchase->id,
                     'product_id' => $item['product_id'] ?? null,
@@ -103,13 +125,15 @@ public function store(Request $request)
             }
         }
 
-        // ✅ Duplicate serial number check (for same product & sparepart)
+        // ✅ SOFT DELETE SAFE SERIAL DUPLICATE CHECK
         $duplicateSerials = [];
+
         foreach ($serialsToInsert as $s) {
             if (empty($s['serial_no'])) continue;
 
             $query = SparepartPurchaseItem::where('serial_no', $s['serial_no'])
-                ->where('sparepart_id', $s['sparepart_id']);
+                ->where('sparepart_id', $s['sparepart_id'])
+                ->whereNull('deleted_at');   // 👈 soft delete condition added
 
             if (!empty($s['product_id'])) {
                 $query->where('product_id', $s['product_id']);
@@ -124,6 +148,7 @@ public function store(Request $request)
 
         if (!empty($duplicateSerials)) {
             $duplicateSerials = array_unique($duplicateSerials);
+
             DB::rollBack();
             return response()->json([
                 'message' => 'The following serial numbers are already purchased: ' . implode(', ', $duplicateSerials),
@@ -131,7 +156,7 @@ public function store(Request $request)
             ], 422);
         }
 
-        // ✅ Insert all new serials into DB
+        // Insert items
         foreach ($serialsToInsert as $record) {
             SparepartPurchaseItem::create($record);
         }
@@ -149,6 +174,7 @@ public function store(Request $request)
 
     } catch (\Throwable $e) {
         DB::rollBack();
+
         return response()->json([
             'message' => 'Error saving purchase',
             'error' => $e->getMessage(),
@@ -187,50 +213,68 @@ $categories = DB::table('product')
 
 public function index(Request $request)
 {
-   $query = DB::table('sparepart_purchase as p')
-    ->leftJoin('vendors as v', 'p.vendor_id', '=', 'v.id')
+    $query = DB::table('sparepart_purchase as p')
+        ->leftJoin('vendors as v', 'p.vendor_id', '=', 'v.id')
 
-    ->leftJoin('sparepart_purchase_items as pi', 'p.id', '=', 'pi.purchase_id')
-    ->leftJoin('product as c', 'pi.product_id', '=', 'c.id')
-    ->leftJoin('spareparts as s', 'pi.sparepart_id', '=', 's.id')
-    ->select(
-        'p.id as purchase_id',
-        'p.challan_no',
-        'p.challan_date',
-        'v.id as vendor_id',
-        // 'v.vendor as vendor_name',
-                DB::raw("COALESCE(v.vendor, 'Deleted Vendor') as vendor_name"),
-        'pi.id as item_id',
-        'pi.quantity as item_quantity',
-        'pi.serial_no',
-        'pi.warranty_status',
-        'c.id as product_id',
-        'c.name as product_name',
-        's.id as sparepart_id',
-        's.name as sparepart_name',
-        DB::raw('SUM(pi.quantity) OVER (PARTITION BY p.id) as total_quantity') 
-    )
-    ->orderBy('p.id', 'desc');
+        ->leftJoin('sparepart_purchase_items as pi', function ($join) {
+            $join->on('p.id', '=', 'pi.purchase_id')
+                 ->whereNull('pi.deleted_at');  // ✅ only active items
+        })
 
+        ->leftJoin('product as c', 'pi.product_id', '=', 'c.id')
+        ->leftJoin('spareparts as s', 'pi.sparepart_id', '=', 's.id')
+
+        ->select(
+            'p.id as purchase_id',
+            'p.challan_no',
+            'p.challan_date',
+            'v.id as vendor_id',
+
+            // Vendor safe-value if vendor is deleted
+            DB::raw("COALESCE(v.vendor, 'Deleted Vendor') as vendor_name"),
+
+            'pi.id as item_id',
+            'pi.quantity as item_quantity',
+            'pi.serial_no',
+            'pi.warranty_status',
+
+            'c.id as product_id',
+            'c.name as product_name',
+
+            's.id as sparepart_id',
+            's.name as sparepart_name',
+
+            // Total quantity per purchase
+            DB::raw('SUM(pi.quantity) OVER (PARTITION BY p.id) as total_quantity')
+        )
+
+        // ✅ ensure only active (non-deleted) purchases shown
+        ->whereNull('p.deleted_at')
+
+        ->orderBy('p.id', 'desc');
 
     $results = $query->get();
 
-    // Group items under purchase
+    /** --------------------------
+     * Group items by purchase
+     * -------------------------- */
     $grouped = $results->groupBy('purchase_id')->map(function ($items) {
         $first = $items->first();
+
         return [
-            'purchase_id'   => $first->purchase_id,
-            'challan_no'    => $first->challan_no,
-            'challan_date'  => $first->challan_date,
-            'total_quantity'=> $first->total_quantity,
+            'purchase_id'    => $first->purchase_id,
+            'challan_no'     => $first->challan_no,
+            'challan_date'   => $first->challan_date,
+            'total_quantity' => $first->total_quantity,
+
             'vendor' => [
                 'id'   => $first->vendor_id,
                 'name' => $first->vendor_name,
             ],
+
             'items' => $items->map(function ($item) {
                 return [
                     'item_id'        => $item->item_id,
-                    // 'product_id'     => $item->product_id,
                     'product_name'   => $item->product_name,
                     'sparepart_id'   => $item->sparepart_id,
                     'sparepart_name' => $item->sparepart_name,
@@ -244,6 +288,7 @@ public function index(Request $request)
 
     return response()->json($grouped);
 }
+
 public function edit($id)
 {
     $purchase = SparepartPurchase::with(['items.product', 'items.sparepart', 'vendor'])
@@ -295,42 +340,58 @@ public function update(Request $request, $id)
 
     $request->validate([
         'vendor_id' => 'required|integer|exists:vendors,id',
+
+        // ✅ SOFT DELETE SAFE UNIQUE CHALLAN VALIDATION
         'challan_no' => [
             'required',
             'string',
             'max:50',
-            Rule::unique('sparepart_purchase', 'challan_no')->ignore($purchase->id),
+            function ($attribute, $value, $fail) use ($id) {
+                $exists = DB::table('sparepart_purchase')
+                    ->where('challan_no', $value)
+                    ->where('id', '!=', $id)
+                    ->whereNull('deleted_at')  // 👈 ignore soft deleted
+                    ->exists();
+
+                if ($exists) {
+                    $fail("The $attribute has already been taken.");
+                }
+            }
         ],
+
         'tracking_number' => 'nullable|string|max:100',
         'challan_date' => ['required', 'date_format:Y-m-d', 'before_or_equal:today'],
-        'received_date' => ['required', 'date_format:Y-m-d', 'before_or_equal:today'],
+'received_date' => ['required', 'date', 'before_or_equal:today'],   
         'courier_name' => 'nullable|string|max:100',
+
         'items' => 'nullable|array|min:1',
         'items.*.id' => 'nullable|integer',
         'items.*.sparepart_id' => 'nullable|integer|exists:spareparts,id',
         'items.*.quantity' => 'required|integer|min:1',
         'items.*.warranty_status' => 'nullable|string|max:50',
         'items.*.serials' => 'nullable|array',
+
         'deleted_ids' => 'nullable|array',
         'deleted_ids.*' => 'integer|exists:sparepart_purchase_items,id',
+
         'document_recipient' => 'nullable|array',
         'document_recipient.*' => 'file|mimes:jpg,jpeg,png,pdf|max:2048',
+
         'document_challan' => 'nullable|array',
-        'document_challan.*' => 'file|mimes:jpg,jpeg,png,pdf|max:2048', // max 2 MB per file
+        'document_challan.*' => 'file|mimes:jpg,jpeg,png,pdf|max:2048',
     ]);
 
     DB::beginTransaction();
 
     try {
         /** --------------------------
-         * Handle uploaded files
+         * Handle uploaded documents
          * -------------------------- */
         $recipientFiles = $purchase->document_recipient ?? [];
-        $challanFiles = $purchase->document_challan ?? [];
 
         if ($request->filled('removed_recipient_files')) {
-            $removedRecipientFiles = json_decode($request->removed_recipient_files, true);
-            $recipientFiles = array_values(array_diff($recipientFiles, $removedRecipientFiles));
+            $removedFiles = json_decode($request->removed_recipient_files, true);
+            $recipientFiles = array_values(array_diff($recipientFiles, $removedFiles));
         }
 
         if ($request->hasFile('document_recipient')) {
@@ -342,44 +403,53 @@ public function update(Request $request, $id)
         }
 
         /** --------------------------
-         * Update main purchase
+         * Update purchase
          * -------------------------- */
         $purchase->update([
             'vendor_id' => $request->vendor_id,
             'challan_no' => $request->challan_no,
             'tracking_number' => $request->tracking_number,
-            'challan_date' => Carbon::createFromFormat('Y-m-d', $request->challan_date)->format('Y-m-d'),
-            'received_date' => Carbon::createFromFormat('Y-m-d', $request->received_date)->format('Y-m-d'),
+            'challan_date' => $request->challan_date,
+            'received_date' => $request->received_date,
             'courier_name' => $request->courier_name,
             'document_recipient' => $recipientFiles,
             'updated_by' => auth()->id(),
         ]);
 
+
+        /** --------------------------
+         * Handle deleted item IDs
+         * -------------------------- */
         if (!empty($request->deleted_ids)) {
             SparepartPurchaseItem::whereIn('id', $request->deleted_ids)->delete();
         }
 
+
         /** --------------------------
-         * Process each item
+         * Process all items
          * -------------------------- */
         $totalQuantity = 0;
         $allSubmittedSerials = [];
 
         foreach ($request->items ?? [] as $item) {
-            $serials = array_filter($item['serials'] ?? []); // remove empty values
 
-            // Check duplicates in request
-            $duplicateInRequest = collect($serials)->duplicates()->all();
-            if (!empty($duplicateInRequest)) {
-                return response()->json([
-                    'errors' => ['items' => ['Duplicate serial(s) in request: ' . implode(', ', $duplicateInRequest)]]
-                ], 422);
-            }
+            $serials = array_filter($item['serials'] ?? []);
 
-            // Check duplicates in DB excluding current purchase
-            if (count($serials) > 0) {
+            // ❗ Soft delete-safe duplicate serial check
+            if (!empty($serials)) {
+
+                // Duplicates inside request
+                $duplicateInRequest = collect($serials)->duplicates()->all();
+                if (!empty($duplicateInRequest)) {
+                    return response()->json([
+                        'errors' => ['items' => ['Duplicate serial(s) in request: ' . implode(', ', $duplicateInRequest)]]
+                    ], 422);
+                }
+
+                // Duplicates inside DB (soft delete aware)
                 $existingSerials = SparepartPurchaseItem::whereIn('serial_no', $serials)
                     ->where('purchase_id', '!=', $purchase->id)
+                    ->whereNull('deleted_at')  // 👈 soft delete logic added
                     ->pluck('serial_no')
                     ->toArray();
 
@@ -390,10 +460,12 @@ public function update(Request $request, $id)
                 }
             }
 
-            // Add serials to global tracker
             $allSubmittedSerials = array_merge($allSubmittedSerials, $serials);
 
-            if (count($serials) > 0) {
+            /** --------------------------
+             * Update serial-based items
+             * -------------------------- */
+            if (!empty($serials)) {
                 foreach ($serials as $serial) {
                     SparepartPurchaseItem::updateOrCreate(
                         [
@@ -409,8 +481,11 @@ public function update(Request $request, $id)
                     );
                 }
                 $totalQuantity += count($serials);
+
             } else {
-                // Non-serialized sparepart
+                /** --------------------------
+                 * Non-serialized items
+                 * -------------------------- */
                 SparepartPurchaseItem::updateOrCreate(
                     [
                         'purchase_id' => $purchase->id,
@@ -427,8 +502,9 @@ public function update(Request $request, $id)
             }
         }
 
+
         /** --------------------------
-         * Delete only unsubmitted serials (fix for multiple ranges)
+         * Delete items not in user request (soft delete)
          * -------------------------- */
         if (!empty($allSubmittedSerials)) {
             SparepartPurchaseItem::where('purchase_id', $purchase->id)
@@ -436,25 +512,34 @@ public function update(Request $request, $id)
                 ->delete();
         }
 
+
+        /** --------------------------
+         * Update total quantity
+         * -------------------------- */
         $purchase->update(['quantity' => $totalQuantity]);
         $purchase->load('items.sparepart', 'items.product');
 
+
         /** --------------------------
-         * Prepare response items
+         * Format ranges for response
          * -------------------------- */
         $purchaseItems = collect();
 
         $purchase->items
             ->groupBy(fn($item) => $item->sparepart_id . '_' . ($item->product_id ?? 'null'))
             ->each(function ($group) use ($purchaseItems) {
+
                 $sparepartId = $group->first()->sparepart_id;
                 $productId = $group->first()->product_id;
                 $warrantyStatus = $group->first()->warranty_status;
 
-                // Sort serial numbers numerically
-                $serials = $group->pluck('serial_no')->filter()->sort(function ($a, $b) {
-                    return (int)preg_replace('/\D/', '', $a) <=> (int)preg_replace('/\D/', '', $b);
-                })->values()->toArray();
+                $serials = $group->pluck('serial_no')
+                    ->filter()
+                    ->sort(function ($a, $b) {
+                        return (int)preg_replace('/\D/', '', $a) <=> (int)preg_replace('/\D/', '', $b);
+                    })
+                    ->values()
+                    ->toArray();
 
                 if (empty($serials)) {
                     $purchaseItems->push([
@@ -470,16 +555,15 @@ public function update(Request $request, $id)
                     return;
                 }
 
-                // Split serials into contiguous ranges
+                // Convert serial list → ranges
                 $range = [$serials[0]];
                 for ($i = 1; $i < count($serials); $i++) {
-                    $prevNum = (int)preg_replace('/\D/', '', $serials[$i - 1]);
-                    $currNum = (int)preg_replace('/\D/', '', $serials[$i]);
+                    $prev = (int)preg_replace('/\D/', '', $serials[$i - 1]);
+                    $curr = (int)preg_replace('/\D/', '', $serials[$i]);
 
-                    if ($currNum === $prevNum + 1) {
+                    if ($curr === $prev + 1) {
                         $range[] = $serials[$i];
                     } else {
-                        // Save current range
                         $purchaseItems->push([
                             'id' => $group->first()->id,
                             'sparepart_id' => $sparepartId,
@@ -490,12 +574,11 @@ public function update(Request $request, $id)
                             'to_serial' => end($range),
                             'serials' => $range,
                         ]);
-                        // Start a new range
                         $range = [$serials[$i]];
                     }
                 }
 
-                // Push last range
+                // Final range
                 if (!empty($range)) {
                     $purchaseItems->push([
                         'id' => $group->first()->id,
@@ -510,41 +593,83 @@ public function update(Request $request, $id)
                 }
             });
 
-        $purchaseItems = $purchaseItems->values();
 
         DB::commit();
 
         return response()->json([
             'message' => 'Spare part purchase updated successfully',
             'quantity' => $totalQuantity,
-            'items' => $purchaseItems,
+            'items' => $purchaseItems->values(),
             'documents' => [
                 'recipients' => $recipientFiles,
-                // 'challans' => $challanFiles,
             ],
         ], 200);
 
     } catch (\Throwable $e) {
+
         DB::rollBack();
+
         return response()->json([
             'message' => 'Update failed',
             'error' => $e->getMessage(),
+            'line' => $e->getLine(),
         ], 500);
     }
 }
 
 
+
 public function destroy($id)
 {
-    DB::transaction(function () use ($id) {
-        SparepartPurchaseItem::where('purchase_id', $id)->delete();
-        SparepartPurchase::findOrFail($id)->delete();
-    });
+    // Try to find the purchase; return 404 if not found
+    $purchase = SparepartPurchase::find($id);
 
-    return response()->json([
-        'message' => 'Purchase and its items deleted successfully'
-    ]);
+    if (!$purchase) {
+        return response()->json([
+            'message' => 'Sparepart purchase not found'
+        ], 404);
+    }
+
+    DB::beginTransaction();
+
+    try {
+        // Get all related items (may be empty)
+        $items = SparepartPurchaseItem::where('purchase_id', $id)->get();
+
+        // Mark deleted_by and soft-delete each item
+        foreach ($items as $item) {
+            $item->deleted_by = auth()->id();
+            $item->save();
+            $item->delete(); // soft delete
+        }
+
+        // Mark deleted_by and soft-delete purchase
+        $purchase->deleted_by = auth()->id();
+        $purchase->save();
+        $purchase->delete(); // soft delete
+
+        DB::commit();
+
+        return response()->json([
+            'message' => 'Purchase and its items deleted successfully'
+        ], 200);
+
+    } catch (\Throwable $e) {
+        DB::rollBack();
+
+        Log::error("Failed deleting purchase ID {$id}: {$e->getMessage()}", [
+            'trace' => $e->getTraceAsString()
+        ]);
+
+        return response()->json([
+            'message' => 'Delete failed',
+            'error' => $e->getMessage(),
+            'line' => $e->getLine(),
+        ], 500);
+    }
 }
+
+
 
 
 public function availableSerials(Request $request)
@@ -646,6 +771,11 @@ public function deleteItem($purchaseId, $itemId)
         ], 404);
     }
 
+    // ✅ Store deleted_by before soft delete
+    $item->deleted_by = auth()->id();
+    $item->save();
+
+    // ✅ Soft delete
     $item->delete();
 
     return response()->json([
@@ -653,6 +783,7 @@ public function deleteItem($purchaseId, $itemId)
         'deleted_item_id' => $itemId
     ]);
 }
+
 
   public function components()
 {
@@ -809,17 +940,19 @@ public function getAllSeriesCounts()
 
 public function getSeriesSpareparts($series)
 {
-    // Decode if frontend sends URL-encoded value like vci%285-series%29
+    // Decode if frontend sends URL-encoded value
     $series = urldecode($series);
 
-    // Remove the product type in parentheses if present
+    // Remove product type inside parentheses — "VCI (5-series)" → "VCI"
     if (preg_match('/^(.*)\((.*)\)$/', $series, $matches)) {
-        $series = trim($matches[1]); // Take only the name before parentheses
+        $series = trim($matches[1]);
     }
 
-    // Try to find the product by its name
+    /** --------------------------------------
+     *  Fetch Product (soft delete safe)
+     * -------------------------------------- */
     $product = Product::where('name', $series)
-        ->whereNull('deleted_at')
+        ->whereNull('deleted_at')               // 👈 soft delete
         ->with('productTypes')
         ->first();
 
@@ -827,7 +960,9 @@ public function getSeriesSpareparts($series)
         return response()->json(['message' => "Product '{$series}' not found"], 404);
     }
 
-    // Get sparepart requirements JSON (array of {id, required_quantity})
+    /** --------------------------------------
+     *  Get sparepart requirements for product
+     * -------------------------------------- */
     $sparepartRequirements = $product->sparepart_requirements ?? [];
 
     if (empty($sparepartRequirements)) {
@@ -838,27 +973,49 @@ public function getSeriesSpareparts($series)
         ]);
     }
 
-    // Fetch spareparts by IDs
+    /** --------------------------------------
+     *  Get Spareparts (soft delete safe)
+     * -------------------------------------- */
     $sparepartIds = collect($sparepartRequirements)->pluck('id')->toArray();
-    $spareparts = Sparepart::whereIn('id', $sparepartIds)->get();
 
-    // Count all assembled VCIs for this product only
+    $spareparts = Sparepart::whereIn('id', $sparepartIds)
+        ->whereNull('deleted_at')               // 👈 soft delete
+        ->get();
+
+    /** --------------------------------------
+     *  Count assembled VCIs (soft delete safe)
+     * -------------------------------------- */
     $assembledVCIs = DB::table('inventory')
-        ->whereNull('deleted_by')
-        ->whereNull('deleted_at')
         ->where('product_id', $product->id)
+        ->whereNull('deleted_by')               // 👈 soft delete logic
+        ->whereNull('deleted_at')
         ->count();
 
-    // Map spareparts with quantities
+    /** --------------------------------------
+     *  Map spareparts and compute stock
+     * -------------------------------------- */
     $sparepartsMapped = $spareparts->map(function ($part) use ($sparepartRequirements, $assembledVCIs) {
+
         $requiredPerProduct = collect($sparepartRequirements)
             ->firstWhere('id', $part->id)['required_quantity'] ?? 0;
 
+        /** -----------------------------
+         * Purchased quantity (active only)
+         * ----------------------------- */
         $purchasedQty = DB::table('sparepart_purchase_items')
             ->where('sparepart_id', $part->id)
+            ->whereNull('deleted_at')           // 👈 soft delete
+            ->whereNull('deleted_by')           // 👈 soft delete
             ->sum('quantity');
 
+        /** -----------------------------
+         * Used quantity
+         * ----------------------------- */
         $usedQty = $assembledVCIs * $requiredPerProduct;
+
+        /** -----------------------------
+         * Available = purchased - used
+         * ----------------------------- */
         $availableQty = max($purchasedQty - $usedQty, 0);
 
         return [
@@ -867,7 +1024,9 @@ public function getSeriesSpareparts($series)
             'name' => $part->name,
             'sparepart_type' => $part->sparepart_type,
             'sparepart_usages' => $part->sparepart_usages,
+
             'required_per_vci' => $requiredPerProduct,
+
             'purchased_quantity' => $purchasedQty,
             'used_quantity' => $usedQty,
             'available_quantity' => $availableQty,
@@ -879,6 +1038,7 @@ public function getSeriesSpareparts($series)
         'spare_parts' => $sparepartsMapped,
     ]);
 }
+
 
 
 

@@ -6,11 +6,13 @@ use Illuminate\Database\Eloquent\Model;
 use App\Models\Product;
 use App\Models\ProductType;
 use App\Models\Vendor;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 
 
 class VCIServiceItems extends Model
 {
+        use SoftDeletes;
 
 protected $table = 'service_vci_items';
 protected $schema = 'public';
@@ -23,6 +25,9 @@ protected $schema = 'public';
     'upload_image',
     'status',
     'remarks',
+     'cerated_at',
+    'updated_at',
+    'deleted_at', 
     'created_by',
     'updated_by',
     'deleted_by',
