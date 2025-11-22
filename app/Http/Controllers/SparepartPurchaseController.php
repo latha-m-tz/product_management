@@ -125,7 +125,6 @@ public function store(Request $request)
             }
         }
 
-        // ✅ SOFT DELETE SAFE SERIAL DUPLICATE CHECK
         $duplicateSerials = [];
 
         foreach ($serialsToInsert as $s) {
@@ -384,9 +383,6 @@ public function update(Request $request, $id)
     DB::beginTransaction();
 
     try {
-        /** --------------------------
-         * Handle uploaded documents
-         * -------------------------- */
         $recipientFiles = $purchase->document_recipient ?? [];
 
         if ($request->filled('removed_recipient_files')) {
@@ -402,9 +398,6 @@ public function update(Request $request, $id)
             }
         }
 
-        /** --------------------------
-         * Update purchase
-         * -------------------------- */
         $purchase->update([
             'vendor_id' => $request->vendor_id,
             'challan_no' => $request->challan_no,
@@ -417,17 +410,11 @@ public function update(Request $request, $id)
         ]);
 
 
-        /** --------------------------
-         * Handle deleted item IDs
-         * -------------------------- */
         if (!empty($request->deleted_ids)) {
             SparepartPurchaseItem::whereIn('id', $request->deleted_ids)->delete();
         }
 
 
-        /** --------------------------
-         * Process all items
-         * -------------------------- */
         $totalQuantity = 0;
         $allSubmittedSerials = [];
 
@@ -462,9 +449,6 @@ public function update(Request $request, $id)
 
             $allSubmittedSerials = array_merge($allSubmittedSerials, $serials);
 
-            /** --------------------------
-             * Update serial-based items
-             * -------------------------- */
             if (!empty($serials)) {
                 foreach ($serials as $serial) {
                     SparepartPurchaseItem::updateOrCreate(
@@ -483,9 +467,6 @@ public function update(Request $request, $id)
                 $totalQuantity += count($serials);
 
             } else {
-                /** --------------------------
-                 * Non-serialized items
-                 * -------------------------- */
                 SparepartPurchaseItem::updateOrCreate(
                     [
                         'purchase_id' => $purchase->id,
@@ -503,26 +484,27 @@ public function update(Request $request, $id)
         }
 
 
-        /** --------------------------
-         * Delete items not in user request (soft delete)
-         * -------------------------- */
-        if (!empty($allSubmittedSerials)) {
-            SparepartPurchaseItem::where('purchase_id', $purchase->id)
-                ->whereNotIn('serial_no', $allSubmittedSerials)
-                ->delete();
-        }
+SparepartPurchaseItem::where('purchase_id', $purchase->id)
+    ->whereNotNull('serial_no')
+    ->whereNotIn('serial_no', $allSubmittedSerials)
+    ->delete();
+
+// Delete non-serial items not in request
+$submittedNonSerialSpareparts = collect($request->items)
+    ->filter(fn($item) => empty($item['serials']))
+    ->pluck('sparepart_id')
+    ->toArray();
+
+SparepartPurchaseItem::where('purchase_id', $purchase->id)
+    ->whereNull('serial_no')
+    ->whereNotIn('sparepart_id', $submittedNonSerialSpareparts)
+    ->delete();
 
 
-        /** --------------------------
-         * Update total quantity
-         * -------------------------- */
         $purchase->update(['quantity' => $totalQuantity]);
         $purchase->load('items.sparepart', 'items.product');
 
 
-        /** --------------------------
-         * Format ranges for response
-         * -------------------------- */
         $purchaseItems = collect();
 
         $purchase->items
@@ -621,7 +603,6 @@ public function update(Request $request, $id)
 
 public function destroy($id)
 {
-    // Try to find the purchase; return 404 if not found
     $purchase = SparepartPurchase::find($id);
 
     if (!$purchase) {
@@ -633,17 +614,14 @@ public function destroy($id)
     DB::beginTransaction();
 
     try {
-        // Get all related items (may be empty)
         $items = SparepartPurchaseItem::where('purchase_id', $id)->get();
 
-        // Mark deleted_by and soft-delete each item
         foreach ($items as $item) {
             $item->deleted_by = auth()->id();
             $item->save();
             $item->delete(); // soft delete
         }
 
-        // Mark deleted_by and soft-delete purchase
         $purchase->deleted_by = auth()->id();
         $purchase->save();
         $purchase->delete(); // soft delete
@@ -742,7 +720,6 @@ public function view()
         ->take(10)
         ->get();
 
-    // Flatten the purchases into rows (vendor, challan, product, quantity)
     $response = [];
 
     foreach ($purchases as $purchase) {
@@ -874,6 +851,124 @@ public function getAllSeriesCounts()
         'data' => $results
     ]);
 }
+public function overall()
+{
+    // 1. Fetch purchased spareparts + purchased serials
+    $purchased = DB::table('sparepart_purchase_items as pi')
+        ->leftJoin('spareparts as sp', 'pi.sparepart_id', '=', 'sp.id')
+        ->whereNull('pi.deleted_at')
+        ->whereNull('pi.deleted_by')
+        ->select(
+            'pi.sparepart_id',
+            'sp.name as sparepart_name',
+            DB::raw('SUM(pi.quantity) as purchased_quantity')
+        )
+        ->groupBy('pi.sparepart_id', 'sp.name')
+        ->orderBy('sp.name')
+        ->get()
+        ->keyBy('sparepart_id');
+
+    if ($purchased->isEmpty()) {
+        return response()->json([]);
+    }
+
+    // 1b. Fetch all purchased serial numbers
+    $purchasedSerialsRaw = DB::table('sparepart_purchase_items as pi')
+        ->whereNull('pi.deleted_at')
+        ->whereNull('pi.deleted_by')
+        ->whereNotNull('pi.serial_no')
+        ->select('pi.sparepart_id', 'pi.serial_no')
+        ->get();
+
+    $purchasedSerials = [];
+    foreach ($purchasedSerialsRaw as $row) {
+        $purchasedSerials[$row->sparepart_id][] = trim($row->serial_no);
+    }
+
+    // remove duplicates
+    foreach ($purchasedSerials as $id => $list) {
+        $purchasedSerials[$id] = array_values(array_unique($list));
+    }
+
+    // ⭐ 2. GET ALL SERIALS ALREADY PRESENT IN INVENTORY (USED SERIALS)
+    $usedSerials = DB::table('inventory')
+        ->whereNotNull('serial_no')
+        ->whereNull('deleted_at')
+        ->pluck('serial_no')
+        ->map(fn($s) => trim($s))
+        ->toArray();
+
+    $usedSerials = array_unique($usedSerials);
+
+    // 3. Count assembled product quantities
+    $assembledCounts = DB::table('inventory')
+        ->whereNull('deleted_by')
+        ->whereNull('deleted_at')
+        ->select('product_id', DB::raw('COUNT(*) as assembled_qty'))
+        ->groupBy('product_id')
+        ->pluck('assembled_qty', 'product_id');
+
+    // 4. Get product sparepart requirements JSON
+    $productRequirements = DB::table('product')
+        ->whereNull('deleted_at')
+        ->select('id', 'sparepart_requirements')
+        ->get()
+        ->map(function ($row) {
+            $row->sparepart_requirements = json_decode($row->sparepart_requirements, true) ?? [];
+            return $row;
+        })
+        ->keyBy('id');
+
+    // 5. Compute usage and available serials
+    $final = $purchased->map(function ($row) use (
+        $assembledCounts,
+        $productRequirements,
+        $purchasedSerials,
+        $usedSerials
+    ) {
+
+        $sparepartId = $row->sparepart_id;
+        $purchasedQty = (int)$row->purchased_quantity;
+
+        // Calculate used quantity
+        $totalUsed = 0;
+
+        foreach ($productRequirements as $productId => $pr) {
+
+            $assembledQty = $assembledCounts[$productId] ?? 0;
+
+            $requirements = $pr->sparepart_requirements ?? [];
+
+            $requiredPerProduct = collect($requirements)
+                ->firstWhere('id', $sparepartId)['required_quantity'] ?? 0;
+
+            $totalUsed += ($assembledQty * $requiredPerProduct);
+        }
+
+        // available qty = purchased - used
+        $availableQty = max($purchasedQty - $totalUsed, 0);
+
+        // ⭐ Remove inventory serials from purchased serials
+        $availableSerials = array_diff(
+            $purchasedSerials[$sparepartId] ?? [],
+            $usedSerials
+        );
+
+        return [
+            'sparepart_id'       => $sparepartId,
+            'sparepart_name'     => $row->sparepart_name,
+            'purchased_quantity' => $purchasedQty,
+            'used_quantity'      => $totalUsed,
+            'available_quantity' => $availableQty,
+            'available_serials'  => array_values($availableSerials),
+        ];
+    })->values();
+
+    return response()->json($final);
+}
+
+
+
 
 
 // public function getSeriesSpareparts($series)
@@ -936,8 +1031,6 @@ public function getAllSeriesCounts()
 //     ]);
 // }
 
-
-
 public function getSeriesSpareparts($series)
 {
     // Decode if frontend sends URL-encoded value
@@ -973,9 +1066,6 @@ public function getSeriesSpareparts($series)
         ]);
     }
 
-    /** --------------------------------------
-     *  Get Spareparts (soft delete safe)
-     * -------------------------------------- */
     $sparepartIds = collect($sparepartRequirements)->pluck('id')->toArray();
 
     $spareparts = Sparepart::whereIn('id', $sparepartIds)
@@ -991,17 +1081,11 @@ public function getSeriesSpareparts($series)
         ->whereNull('deleted_at')
         ->count();
 
-    /** --------------------------------------
-     *  Map spareparts and compute stock
-     * -------------------------------------- */
     $sparepartsMapped = $spareparts->map(function ($part) use ($sparepartRequirements, $assembledVCIs) {
 
         $requiredPerProduct = collect($sparepartRequirements)
             ->firstWhere('id', $part->id)['required_quantity'] ?? 0;
 
-        /** -----------------------------
-         * Purchased quantity (active only)
-         * ----------------------------- */
         $purchasedQty = DB::table('sparepart_purchase_items')
             ->where('sparepart_id', $part->id)
             ->whereNull('deleted_at')           // 👈 soft delete

@@ -13,9 +13,7 @@ use Illuminate\Support\Facades\Auth;
 
 class ServiceVCIManagementController extends Controller
 {
-    /**
-     * List all VCI services (non-deleted)
-     */
+   
     public function index()
     {
         $services = VCIService::with(['vendor', 'items.product'])
@@ -50,9 +48,6 @@ class ServiceVCIManagementController extends Controller
         return response()->json($data, 200);
     }
 
-    /**
-     * Create a new VCI service with items and optional receipt files
-     */
     public function store(Request $request)
     {
         $validator = Validator::make($request->all(), [
@@ -186,9 +181,6 @@ class ServiceVCIManagementController extends Controller
         ], 201);
     }
 
-    /**
-     * Show single VCI service (non-deleted)
-     */
     public function show($id)
     {
         $service = VCIService::with(['vendor', 'items.product'])
@@ -349,12 +341,9 @@ class ServiceVCIManagementController extends Controller
         foreach ($request->items as $item) {
             $uploadPath = null;
 
-            // If a new uploaded file was provided (UploadedFile)
             if (isset($item['upload_image']) && $item['upload_image'] instanceof \Illuminate\Http\UploadedFile) {
-                // if replacing existing file for this item, delete old one (handled below when updating existing item)
                 $uploadPath = $item['upload_image']->store('uploads/service_vci/items', 'public');
             } elseif (!empty($item['upload_image']) && is_string($item['upload_image'])) {
-                // if frontend sent full URL, convert to relative storage path
                 $uploadPath = $this->normalizeImagePath($item['upload_image']);
             }
 
@@ -434,9 +423,7 @@ class ServiceVCIManagementController extends Controller
         return response()->json(['message' => 'Service VCI and its items soft deleted successfully'], 200);
     }
 
-    /**
-     * List all VCI serial numbers (deduplicated)
-     */
+   
     public function getAllVCISerialNumbers()
     {
         $serialNumbers = VCIServiceItems::whereNull('deleted_at')
@@ -448,9 +435,7 @@ class ServiceVCIManagementController extends Controller
         return response()->json($serialNumbers, 200);
     }
 
-    /**
-     * Return service items with optional filters
-     */
+   
     public function getAllServiceItems(Request $request)
     {
         $query = VCIServiceItems::query()
@@ -502,14 +487,11 @@ class ServiceVCIManagementController extends Controller
         return response()->json($response, 200);
     }
 
-    /**
-     * Normalize a full URL or absolute path to storage relative path
-     */
+   
     private function normalizeImagePath($path)
     {
         if (!$path) return null;
 
-        // Remove possible full URL parts -> make it a relative storage path
         $replacements = [
             url('storage') . '/',
             'http://localhost/storage/',

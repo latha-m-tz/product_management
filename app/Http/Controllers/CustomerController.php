@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use App\Models\Customer;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
+use App\Models\Sale;
 
 class CustomerController extends Controller
 {
@@ -227,13 +228,20 @@ public function update(Request $request, $id)
 public function destroy($id)
 {
     try {
-
         $customer = Customer::whereNull('deleted_at')->findOrFail($id);
 
-        $userId = Auth::id();
+        // 🔥 Check if this customer is used in Sales
+        $hasSales = Sale::where('customer_id', $id)->exists();
 
-        // Set who deleted it
-        $customer->deleted_by = $userId;
+        if ($hasSales) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'This customer cannot be deleted because it is linked with existing sales.'
+            ], 400);
+        }
+
+        // Who deleted
+        $customer->deleted_by = Auth::id();
         $customer->save();
 
         // Soft delete
@@ -242,7 +250,7 @@ public function destroy($id)
         return response()->json([
             'status' => 'success',
             'message' => 'Customer soft deleted successfully',
-            'deleted_by' => $userId
+            'deleted_by' => Auth::id(),
         ], 200);
 
     } catch (\Exception $e) {

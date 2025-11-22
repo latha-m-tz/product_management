@@ -9,7 +9,9 @@ use App\Models\DeletedSerial;
 use Illuminate\Http\Request;
 use App\Models\SaleItem;
 use Illuminate\Support\Facades\Auth;
-
+use Illuminate\Support\Facades\DB;
+use App\Models\Sparepart;
+use App\Models\SparepartPurchaseItem; 
 class InventoryController extends Controller
 {
     public function getAllItems()
@@ -905,32 +907,27 @@ public function checkSerialsPurchased(Request $request)
     $request->validate([
         'serials' => 'required|array',
         'serials.*' => 'required|string',
-        'product_id' => 'required|integer', // optional, add if inventory is product-specific
+        'product_id' => 'required|integer',
     ]);
 
-    $serials = array_map('trim', $request->serials); // Trim spaces
-    $productId = $request->product_id ?? null;
+    $serials = array_map('trim', $request->serials);
+    $productId = $request->product_id;
+    $assembleCount = count($serials);
 
-    // 🔹 Fetch purchased serials that match the given serial numbers
-    $purchasedSerials = \App\Models\SparepartPurchaseItem::whereIn('serial_no', $serials)
+
+    $purchasedSerials = SparepartPurchaseItem::whereIn('serial_no', $serials)
         ->pluck('serial_no')
         ->map(fn($s) => trim($s))
         ->toArray();
 
-    // 🔹 Fetch serials that already exist in inventory
-    $inventoryQuery = \App\Models\Inventory::whereIn('serial_no', $serials);
-    if ($productId) {
-        $inventoryQuery->where('product_id', $productId); // filter by product if needed
-    }
-    $existingInventorySerials = $inventoryQuery
+    $existingInventorySerials = Inventory::whereIn('serial_no', $serials)
+        ->where('product_id', $productId)
         ->pluck('serial_no')
         ->map(fn($s) => trim($s))
         ->toArray();
 
-    // 🔹 Determine which serials are not purchased
     $notPurchasedSerials = array_diff($serials, $purchasedSerials);
 
-    // 🔹 Prepare items with status
     $items = [];
     foreach ($serials as $s) {
         if (in_array($s, $existingInventorySerials)) {
@@ -954,11 +951,61 @@ public function checkSerialsPurchased(Request $request)
         }
     }
 
+
+    $product = Product::find($productId);
+    $requirements = $product->sparepart_requirements ?? [];
+
+    $shortages = [];
+
+    foreach ($requirements as $req) {
+
+        $sparepartId = $req['id'];
+        $requiredPerProduct = $req['required_quantity'];
+        $neededTotal = $requiredPerProduct * $assembleCount;
+
+        $purchasedQty = DB::table('sparepart_purchase_items')
+            ->where('sparepart_id', $sparepartId)
+            ->whereNull('deleted_by')
+            ->whereNull('deleted_at')
+            ->sum('quantity');
+
+        // Skip shortages for parts never purchased
+        if ($purchasedQty <= 0) continue;
+
+        $assembledCount = DB::table('inventory')
+            ->where('product_id', $productId)
+            ->whereNull('deleted_by')
+            ->whereNull('deleted_at')
+            ->count();
+
+        $usedQty = $assembledCount * $requiredPerProduct;
+
+        $availableQty = max($purchasedQty - $usedQty, 0);
+
+        if ($availableQty < $neededTotal) {
+            $shortages[] = [
+                'sparepart_id'   => $sparepartId,
+                'sparepart_name' => Sparepart::find($sparepartId)->name,
+                'required'       => $neededTotal,
+                'available'      => $availableQty,
+                'shortage'       => $neededTotal - $availableQty,
+            ];
+        }
+    }
+
+
     return response()->json([
-        'purchased' => array_values(array_diff($purchasedSerials, $existingInventorySerials)),
-        'not_purchased' => array_values($notPurchasedSerials),
-        'items' => $items,
+        'serial_validation' => [
+            'purchased'       => array_values(array_diff($purchasedSerials, $existingInventorySerials)),
+            'not_purchased'   => array_values($notPurchasedSerials),
+            'items'           => $items,
+        ],
+        'sparepart_shortages' => $shortages,
+        'can_assemble'        => count($shortages) === 0,
+        'attempted_quantity'  => $assembleCount,
     ]);
 }
+
+
 
 }
