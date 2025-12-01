@@ -93,8 +93,8 @@ class SalesController extends Controller
                 }
             ],
 
-'challan_date'   => 'required|date|before_or_equal:today',
-'shipment_date'  => 'required|date|before_or_equal:today',
+           'challan_date'   => 'required|date|before_or_equal:today',
+            'shipment_date'  => 'required|date|before_or_equal:today',
             'shipment_name' => 'nullable|string',
             'notes'         => 'nullable|string',
             'items'         => 'required|array|min:1',
@@ -382,4 +382,66 @@ public function getSaleSerials($productId)
                 ->get()
         );
     }
+   public function getLastFourSales()
+{
+    $sales = Sale::with([
+        'customer:id,customer',
+        'items:id,sale_id,product_id,quantity',
+        'items.product:id,name'
+    ])
+    ->whereNull('deleted_at') // remove this if your sales table does not have soft deletes
+    ->orderBy('id', 'desc')
+    ->limit(4)
+    ->get();
+
+    if ($sales->isEmpty()) {
+        // Try without deleted_at filter
+        $sales = Sale::with([
+            'customer:id,customer',
+            'items:id,sale_id,product_id,quantity',
+            'items.product:id,name'
+        ])
+        ->orderBy('id', 'desc')
+        ->limit(4)
+        ->get();
+    }
+
+    $formatted = $sales->map(function ($sale) {
+        return [
+            'sale_id'       => $sale->id,
+            'customer'      => $sale->customer->customer ?? 'N/A',
+            'shipment_date' => $sale->shipment_date,
+            'products'      => $sale->items->map(function ($item) {
+                return [
+                    'product_name' => $item->product->name ?? 'N/A',
+                    'quantity'     => $item->quantity,
+                ];
+            }),
+        ];
+    });
+
+    return response()->json([
+        'success' => true,
+        'message' => 'Last 4 sales fetched successfully',
+        'data'    => $formatted
+    ]);
+}
+public function getTotalProductSalesCount()
+{
+    $count = SaleItem::whereNull('deleted_at')
+        ->whereIn('sale_id', function ($q) {
+            $q->select('id')
+              ->from('sales')
+              ->whereNull('deleted_at');
+        })
+        ->count();
+
+    return response()->json([
+        'success' => true,
+        'message' => 'Total product sales count fetched successfully',
+        'count' => $count,
+    ]);
+}
+
+
 }

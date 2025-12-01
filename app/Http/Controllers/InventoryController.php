@@ -54,7 +54,6 @@ class InventoryController extends Controller
             });
         }
 
-        // Exclude sold items
         $soldSerials = SaleItem::pluck('serial_no')->toArray();
         if (!empty($soldSerials)) {
             $query->whereNotIn('serial_no', $soldSerials);
@@ -95,6 +94,9 @@ public function store(Request $request)
     try {
         \Log::info('Inventory payload:', $request->all());
 
+        /* ============================================================
+            VALIDATE REQUEST
+        ============================================================ */
         $validated = $request->validate([
             'product_id' => [
                 'required', 'integer',
@@ -104,28 +106,23 @@ public function store(Request $request)
                     }
                 },
             ],
-            // 'product_type_id' => [
-            //     'required', 'integer',
-            //     function ($attribute, $value, $fail) {
-            //         if (!\App\Models\ProductType::where('id', $value)->whereNull('deleted_at')->exists()) {
-            //             $fail("Invalid product type.");
-            //         }
-            //     },
-            // ],
             'firmware_version' => 'nullable|string|max:100',
             'tested_date'      => 'nullable|date',
+
             'items'            => 'required|array|min:1',
-            'items.*.serial_no' => 'required|string|max:100',
-            'items.*.tested_by'    => 'nullable|string|max:100',
-            'items.*.tested_status'=> 'nullable|string',
-            'items.*.test_remarks' => 'nullable|string|max:255',
-            'items.*.tested_date'  => 'nullable|date',
+            'items.*.serial_no'     => 'required|string|max:100',
+            'items.*.tested_by'     => 'nullable|string|max:100',
+            'items.*.tested_status' => 'nullable|string',
+            'items.*.test_remarks'  => 'nullable|string|max:255',
+            'items.*.tested_date'   => 'nullable|date',
         ]);
 
         $userId = Auth::id() ?? 1;
         $results = [];
 
-        // Extract numeric serials and sort
+        /* ============================================================
+            SERIAL RANGE INFORMATION
+        ============================================================ */
         $serialNumbers = collect($validated['items'])
             ->pluck('serial_no')
             ->map(fn($s) => (int)preg_replace('/\D/', '', $s))
@@ -148,44 +145,71 @@ public function store(Request $request)
             }
         }
 
-        // If consecutive, use numeric range count; else, just number of entered serials
         $quantity = $isConsecutive
             ? ($serialNumbers->last() - $serialNumbers->first() + 1)
             : count($serialNumbers);
 
+        /* ============================================================
+            LOOP EACH SERIAL
+        ============================================================ */
         foreach ($validated['items'] as $item) {
-            $serial = $item['serial_no'];
 
-$isPurchased = \App\Models\SparepartPurchaseItem::where('serial_no', $serial)
-    ->exists();
+            $serial = trim($item['serial_no']);
+
+            /* ------------------------------------------------------------
+                1️⃣ CHECK: Serial must be purchased
+            ------------------------------------------------------------ */
+            $isPurchased = \App\Models\SparepartPurchaseItem::where('serial_no', $serial)
+                ->whereNull('deleted_at')
+                ->exists();
 
             if (!$isPurchased) {
                 $results[] = [
                     'serial_no' => $serial,
-                    'status' => 'not_purchased',
-                    'message' => 'This serial is not purchased for the selected product.',
+                    'status'    => 'not_purchased',
+                    'message'   => 'This serial is not purchased for the selected product.',
                 ];
                 continue;
             }
 
-            // ✅ Skip if deleted
+            /* ------------------------------------------------------------
+                2️⃣ CHECK: Serial is in service (Inward or Testing)
+            ------------------------------------------------------------ */
+            $isInService = DB::table('service_vci_items')
+                ->where('vci_serial_no', $serial)
+                ->whereIn('status', ['Inward', 'Testing'])
+                ->whereNull('deleted_at')
+                ->exists();
+
+            if ($isInService) {
+                $results[] = [
+                    'serial_no' => $serial,
+                    'status'    => 'in_service',
+                    'message'   => 'This serial number is currently in service and cannot be assembled.',
+                ];
+                continue;
+            }
+
+            /* ------------------------------------------------------------
+                3️⃣ CHECK: Skip if marked deleted
+            ------------------------------------------------------------ */
             $isDeletedSerial = \App\Models\DeletedSerial::where('serial_no', $serial)
                 ->where('product_id', $validated['product_id'])
-                // ->where('product_type_id', $validated['product_type_id'])
                 ->exists();
 
             if ($isDeletedSerial) {
                 $results[] = [
                     'serial_no' => $serial,
-                    'status' => 'skipped',
-                    'message' => 'Marked deleted — skipped.',
+                    'status'    => 'skipped',
+                    'message'   => 'Marked deleted — skipped.',
                 ];
                 continue;
             }
 
-            // ✅ Skip if already exists
+            /* ------------------------------------------------------------
+                4️⃣ CHECK: Already assembled?
+            ------------------------------------------------------------ */
             $exists = \App\Models\Inventory::where('product_id', $validated['product_id'])
-                // ->where('product_type_id', $validated['product_type_id'])
                 ->where('serial_no', $serial)
                 ->whereNull('deleted_at')
                 ->exists();
@@ -193,16 +217,17 @@ $isPurchased = \App\Models\SparepartPurchaseItem::where('serial_no', $serial)
             if ($exists) {
                 $results[] = [
                     'serial_no' => $serial,
-                    'status' => 'exists',
-                    'message' => 'Already exists in inventory.',
+                    'status'    => 'exists',
+                    'message'   => 'Already exists in inventory.',
                 ];
                 continue;
             }
 
-            // ✅ Add each serial
+            /* ------------------------------------------------------------
+                5️⃣ INSERT INVENTORY
+            ------------------------------------------------------------ */
             \App\Models\Inventory::create([
                 'product_id'       => $validated['product_id'],
-                // 'product_type_id'  => $validated['product_type_id'],
                 'firmware_version' => $validated['firmware_version'] ?? null,
                 'tested_date'      => $item['tested_date'] ?? $validated['tested_date'] ?? null,
                 'serial_no'        => $serial,
@@ -217,21 +242,23 @@ $isPurchased = \App\Models\SparepartPurchaseItem::where('serial_no', $serial)
 
             $results[] = [
                 'serial_no' => $serial,
-                'status' => 'added',
-                'message' => 'Inventory item added successfully.',
+                'status'    => 'added',
+                'message'   => 'Inventory item added successfully.',
             ];
         }
 
+        /* ============================================================
+            FINAL RESPONSE
+        ============================================================ */
         return response()->json([
-            'message' => 'Inventory process completed',
-            'product_id' => $validated['product_id'],
-            // 'product_type_id' => $validated['product_type_id'],
+            'message'          => 'Inventory process completed',
+            'product_id'       => $validated['product_id'],
             'firmware_version' => $validated['firmware_version'] ?? null,
-            'tested_date' => $validated['tested_date'] ?? null,
-            'from_serial' => $fromSerial,
-            'to_serial' => $toSerial,
-            'quantity' => $quantity,
-            'items' => $results,
+            'tested_date'      => $validated['tested_date'] ?? null,
+            'from_serial'      => $fromSerial,
+            'to_serial'        => $toSerial,
+            'quantity'         => $quantity,
+            'items'            => $results,
         ]);
 
     } catch (\Illuminate\Validation\ValidationException $ve) {
@@ -244,10 +271,11 @@ $isPurchased = \App\Models\SparepartPurchaseItem::where('serial_no', $serial)
         \Log::error('Inventory store error: '.$e->getMessage());
         return response()->json([
             'message' => 'Failed to add inventory',
-            'error' => $e->getMessage(),
+            'error'   => $e->getMessage(),
         ], 500);
     }
 }
+
 
 
 
@@ -819,11 +847,9 @@ public function getMissingSerials($from_serial, $to_serial)
 
     $fullRange = range($from_serial, $to_serial);
 
-    // --- Identify the product name from the first serial ---
     $productName = '-';
     $productTypeName = 'vci'; // always VCI as per your request
 
-    // Try to detect product series based on first serial (like 9-series)
     $firstDigit = substr((string)$from_serial, 0, 1);
     switch ($firstDigit) {
         case '5':
@@ -845,14 +871,12 @@ public function getMissingSerials($from_serial, $to_serial)
             $productName = 'Unknown Series';
     }
 
-    // --- Fetch existing inventory serials ---
     $existingSerials = Inventory::whereNull('deleted_at')
         ->whereBetween('serial_no', [$from_serial, $to_serial])
         ->with(['product:id,name', 'productType:id,name'])
         ->get(['serial_no', 'product_id', 'product_type_id'])
         ->keyBy('serial_no');
 
-    // --- Fetch deleted serials ---
     $deletedSerials = \DB::table('deleted_serials')
         ->leftJoin('product', 'deleted_serials.product_id', '=', 'product.id')
         ->leftJoin('product_type', 'deleted_serials.product_type_id', '=', 'product_type.id')
@@ -867,7 +891,6 @@ public function getMissingSerials($from_serial, $to_serial)
         ->get()
         ->keyBy('serial_no');
 
-    // --- Build missing serials list ---
     $missingSerials = [];
 
     foreach ($fullRange as $serial) {
@@ -1006,6 +1029,21 @@ public function checkSerialsPurchased(Request $request)
     ]);
 }
 
+
+public function availableProductCount()
+{
+    $soldSerials = \App\Models\SaleItem::pluck('serial_no')->toArray();
+
+    $count = \App\Models\Inventory::whereNull('deleted_at')
+        ->whereNotIn('serial_no', $soldSerials)
+        ->count();
+
+    return response()->json([
+        'success' => true,
+        'message' => 'Available product count fetched successfully',
+        'count' => $count,
+    ]);
+}
 
 
 }

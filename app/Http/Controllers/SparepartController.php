@@ -44,7 +44,7 @@ class SparepartController extends Controller
                 $exists = Sparepart::whereRaw(
                     "REPLACE(LOWER(name), ' ', '') = ?", [$normalized]
                 )
-                ->whereNull('deleted_at')   // Soft delete check
+                ->whereNull('deleted_at')   
                 ->exists();
 
                 if ($exists) {
@@ -58,7 +58,6 @@ class SparepartController extends Controller
         'required_per_vci' => 'nullable|integer|min:1',
     ]);
 
-    // Default value if missing
     $validated['required_per_vci'] = $validated['required_per_vci'] ?? 1;
 
     // Add created_by
@@ -143,7 +142,6 @@ class SparepartController extends Controller
         'required_per_vci' => 'nullable|integer|min:1',
     ]);
 
-    // Set default value
     $validated['required_per_vci'] = $validated['required_per_vci'] ?? 1;
 
     $validated['updated_by'] = auth()->id();
@@ -156,9 +154,7 @@ class SparepartController extends Controller
 }
 
 
-    /**
-     * Delete a sparepart.
-     */
+
    public function destroy($id)
 {
     $sparepart = Sparepart::find($id);
@@ -171,7 +167,6 @@ class SparepartController extends Controller
     }
 
     try {
-        // Store deleted_by before soft delete
         $sparepart->deleted_by = auth()->id();
         $sparepart->save();
 
@@ -191,7 +186,6 @@ class SparepartController extends Controller
             'sparepart_id' => $sparepart->id,
         ]);
 
-        // Foreign key constraint violation (linked to other records)
         if ($e->getCode() === '23503') {
             return response()->json([
                 'success' => false,
@@ -226,9 +220,6 @@ public function index()
 
     $sparepartsWithAvailableQty = $spareparts->map(function ($part) {
 
-        /** -----------------------------------------
-         * 1. TOTAL PURCHASED QTY (soft delete safe)
-         * ----------------------------------------- */
         $purchasedQty = (int) \DB::table('sparepart_purchase_items')
             ->where('sparepart_id', $part->id)
             ->whereNull('deleted_at')     // soft delete safe
@@ -236,12 +227,8 @@ public function index()
             ->sum('quantity');
 
 
-        /** -----------------------------------------
-         * 2. USED QUANTITY CALCULATION
-         * ----------------------------------------- */
         $usedQty = 0;
 
-        // sparepart_usages is JSON: [{"product_id":1,"required_quantity":2}, ...]
         $usages = json_decode($part->sparepart_usages, true);
 
         if (is_array($usages) && !empty($usages)) {
@@ -268,10 +255,6 @@ public function index()
 
         } else {
 
-            /** -----------------------------------------
-             * 3. If no usage rules → fall back to generic rule
-             * required_per_vci × ALL assembled VCIs
-             * ----------------------------------------- */
             $assembledVCIs = \DB::table('inventory')
                 ->whereNull('deleted_by')
                 ->whereNull('deleted_at')
@@ -283,18 +266,12 @@ public function index()
         }
 
 
-        /** -----------------------------------------
-         * 4. AVAILABLE QUANTITY (never negative)
-         * ----------------------------------------- */
         $availableQty = $purchasedQty - $usedQty;
         if ($availableQty < 0) {
             $availableQty = 0;
         }
 
 
-        /** -----------------------------------------
-         * 5. FINAL OUTPUT STRUCTURE
-         * ----------------------------------------- */
         return [
             'id' => $part->id,
             'code' => $part->code,
@@ -317,10 +294,6 @@ public function index()
         'spareparts' => $sparepartsWithAvailableQty->values()
     ], 200);
 }
-
-
-
-
 
     public function deleteItem($purchase_id, $sparepart_id)
     {

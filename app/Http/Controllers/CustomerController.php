@@ -80,7 +80,6 @@ public function store(Request $request)
         'status'    => 'nullable|in:active,inactive',
     ]);
 
-    // Create customer
     $customer = Customer::create([
         'customer'   => $validated['customer'],
         'email'      => $validated['email'] ?? null,
@@ -230,7 +229,6 @@ public function destroy($id)
     try {
         $customer = Customer::whereNull('deleted_at')->findOrFail($id);
 
-        // 🔥 Check if this customer is used in Sales
         $hasSales = Sale::where('customer_id', $id)->exists();
 
         if ($hasSales) {
@@ -285,25 +283,24 @@ public function index()
     ]);
 }
 
- 
-
-
 public function customercount()
-    {
-        try {
-            $count = Customer::count();
+{
+    try {
+        $count = Customer::whereNull('deleted_at')->count();
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Customer count fetched successfully',
-                'count'   => $count
-            ]);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Error fetching customer count: ' . $e->getMessage(),
-            ], 500);
-        }
+        return response()->json([
+            'success' => true,
+            'message' => 'Customer count fetched successfully',
+            'count'   => $count
+        ]);
+    } catch (\Exception $e) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Error fetching customer count: ' . $e->getMessage(),
+        ], 500);
     }
- 
+}
+
+
+
 }

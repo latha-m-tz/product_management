@@ -22,7 +22,6 @@ public function store(Request $request)
     $request->validate([
         'vendor_id' => 'required|integer|exists:vendors,id',
 
-        // ✅ SOFT DELETE SAFE CHALLAN UNIQUE CHECK
         'challan_no' => [
             'required',
             'string',
@@ -30,7 +29,7 @@ public function store(Request $request)
             function ($attribute, $value, $fail) {
                 $exists = DB::table('sparepart_purchase')
                     ->where('challan_no', $value)
-                    ->whereNull('deleted_at')  // 👈 soft delete logic
+                    ->whereNull('deleted_at')  
                     ->exists();
 
                 if ($exists) {
@@ -132,7 +131,7 @@ public function store(Request $request)
 
             $query = SparepartPurchaseItem::where('serial_no', $s['serial_no'])
                 ->where('sparepart_id', $s['sparepart_id'])
-                ->whereNull('deleted_at');   // 👈 soft delete condition added
+                ->whereNull('deleted_at');   
 
             if (!empty($s['product_id'])) {
                 $query->where('product_id', $s['product_id']);
@@ -217,12 +216,11 @@ public function index(Request $request)
 
         ->leftJoin('sparepart_purchase_items as pi', function ($join) {
             $join->on('p.id', '=', 'pi.purchase_id')
-                 ->whereNull('pi.deleted_at');  // ✅ only active items
+                 ->whereNull('pi.deleted_at');  
         })
 
         ->leftJoin('product as c', 'pi.product_id', '=', 'c.id')
         ->leftJoin('spareparts as s', 'pi.sparepart_id', '=', 's.id')
-
         ->select(
             'p.id as purchase_id',
             'p.challan_no',
@@ -254,9 +252,6 @@ public function index(Request $request)
 
     $results = $query->get();
 
-    /** --------------------------
-     * Group items by purchase
-     * -------------------------- */
     $grouped = $results->groupBy('purchase_id')->map(function ($items) {
         $first = $items->first();
 
@@ -307,7 +302,6 @@ public function edit($id)
         'challan_date' => $purchase->challan_date ? \Carbon\Carbon::parse($purchase->challan_date)->format('d-m-Y') : null,
         'received_date' => $purchase->received_date ? \Carbon\Carbon::parse($purchase->received_date)->format('d-m-Y') : null,
         'document_recipient' => $recipientFiles,
-
         'items' => $purchase->items->map(function ($item) {
             // Ensure from_serial and to_serial are integers if present
             $fromSerial = $item->from_serial ?? $item->serial_no;
@@ -340,7 +334,6 @@ public function update(Request $request, $id)
     $request->validate([
         'vendor_id' => 'required|integer|exists:vendors,id',
 
-        // ✅ SOFT DELETE SAFE UNIQUE CHALLAN VALIDATION
         'challan_no' => [
             'required',
             'string',
@@ -422,10 +415,8 @@ public function update(Request $request, $id)
 
             $serials = array_filter($item['serials'] ?? []);
 
-            // ❗ Soft delete-safe duplicate serial check
             if (!empty($serials)) {
 
-                // Duplicates inside request
                 $duplicateInRequest = collect($serials)->duplicates()->all();
                 if (!empty($duplicateInRequest)) {
                     return response()->json([
@@ -489,8 +480,8 @@ SparepartPurchaseItem::where('purchase_id', $purchase->id)
     ->whereNotIn('serial_no', $allSubmittedSerials)
     ->delete();
 
-// Delete non-serial items not in request
-$submittedNonSerialSpareparts = collect($request->items)
+
+    $submittedNonSerialSpareparts = collect($request->items)
     ->filter(fn($item) => empty($item['serials']))
     ->pluck('sparepart_id')
     ->toArray();
@@ -599,8 +590,6 @@ SparepartPurchaseItem::where('purchase_id', $purchase->id)
     }
 }
 
-
-
 public function destroy($id)
 {
     $purchase = SparepartPurchase::find($id);
@@ -646,9 +635,6 @@ public function destroy($id)
         ], 500);
     }
 }
-
-
-
 
 public function availableSerials(Request $request)
 {
@@ -853,7 +839,9 @@ public function getAllSeriesCounts()
 }
 public function overall()
 {
-    // 1. Fetch purchased spareparts + purchased serials
+    /* ---------------------------------------------------
+        1. Purchased Quantities
+    --------------------------------------------------- */
     $purchased = DB::table('sparepart_purchase_items as pi')
         ->leftJoin('spareparts as sp', 'pi.sparepart_id', '=', 'sp.id')
         ->whereNull('pi.deleted_at')
@@ -872,35 +860,40 @@ public function overall()
         return response()->json([]);
     }
 
-    // 1b. Fetch all purchased serial numbers
-    $purchasedSerialsRaw = DB::table('sparepart_purchase_items as pi')
-        ->whereNull('pi.deleted_at')
-        ->whereNull('pi.deleted_by')
-        ->whereNotNull('pi.serial_no')
-        ->select('pi.sparepart_id', 'pi.serial_no')
+    /* ---------------------------------------------------
+        2. Purchased Serials (PCB only)
+    --------------------------------------------------- */
+    $purchasedSerialsRaw = DB::table('sparepart_purchase_items')
+        ->whereNull('deleted_at')
+        ->whereNull('deleted_by')
+        ->whereNotNull('serial_no')
+        ->select('sparepart_id', 'serial_no')
         ->get();
 
     $purchasedSerials = [];
-    foreach ($purchasedSerialsRaw as $row) {
-        $purchasedSerials[$row->sparepart_id][] = trim($row->serial_no);
+    foreach ($purchasedSerialsRaw as $r) {
+        $purchasedSerials[$r->sparepart_id][] = trim($r->serial_no);
     }
 
-    // remove duplicates
     foreach ($purchasedSerials as $id => $list) {
         $purchasedSerials[$id] = array_values(array_unique($list));
     }
 
-    // ⭐ 2. GET ALL SERIALS ALREADY PRESENT IN INVENTORY (USED SERIALS)
-    $usedSerials = DB::table('inventory')
+    /* ---------------------------------------------------
+        3. Assembled Serial Numbers
+    --------------------------------------------------- */
+    $assembledSerials = DB::table('inventory')
         ->whereNotNull('serial_no')
         ->whereNull('deleted_at')
         ->pluck('serial_no')
-        ->map(fn($s) => trim($s))
+        ->map(fn($x) => trim($x))
         ->toArray();
 
-    $usedSerials = array_unique($usedSerials);
+    $assembledSerials = array_unique($assembledSerials);
 
-    // 3. Count assembled product quantities
+    /* ---------------------------------------------------
+        4. Assembly counts per product
+    --------------------------------------------------- */
     $assembledCounts = DB::table('inventory')
         ->whereNull('deleted_by')
         ->whereNull('deleted_at')
@@ -908,7 +901,9 @@ public function overall()
         ->groupBy('product_id')
         ->pluck('assembled_qty', 'product_id');
 
-    // 4. Get product sparepart requirements JSON
+    /* ---------------------------------------------------
+        5. Product Requirements
+    --------------------------------------------------- */
     $productRequirements = DB::table('product')
         ->whereNull('deleted_at')
         ->select('id', 'sparepart_requirements')
@@ -919,55 +914,143 @@ public function overall()
         })
         ->keyBy('id');
 
-    // 5. Compute usage and available serials
+    /* ---------------------------------------------------
+        6. PCB items currently in service
+    --------------------------------------------------- */
+    $pcbInService = DB::table('service_vci_items')
+        ->whereNotNull('vci_serial_no')
+        ->whereIn('status', ['Inward', 'Testing'])
+        ->whereNull('deleted_at')
+        ->select('sparepart_id', 'vci_serial_no', 'status')
+        ->get()
+        ->groupBy('sparepart_id');
+
+    /* ---------------------------------------------------
+        7. PCB serials already delivered
+    --------------------------------------------------- */
+    $pcbDelivered = DB::table('service_vci_items')
+        ->whereNotNull('vci_serial_no')
+        ->where('status', 'Delivered')
+        ->whereNull('deleted_at')
+        ->pluck('vci_serial_no')
+        ->map(fn($x) => trim($x))
+        ->toArray();
+
+    /* ---------------------------------------------------
+        8. Non-PCB service quantity (Return)
+    --------------------------------------------------- */
+    $nonPcbReturns = DB::table('service_vci_items')
+        ->whereNotNull('quantity')
+        ->where('status', 'Return')
+        ->whereNull('deleted_at')
+        ->select('sparepart_id', DB::raw('SUM(quantity) as return_qty'))
+        ->groupBy('sparepart_id')
+        ->pluck('return_qty', 'sparepart_id');
+
+    /* ---------------------------------------------------
+        FINAL PROCESSING
+    --------------------------------------------------- */
     $final = $purchased->map(function ($row) use (
-        $assembledCounts,
-        $productRequirements,
         $purchasedSerials,
-        $usedSerials
+        $assembledSerials,
+        $productRequirements,
+        $assembledCounts,
+        $pcbInService,
+        $pcbDelivered,
+        $nonPcbReturns
     ) {
+        $id   = $row->sparepart_id;
+        $name = strtolower($row->sparepart_name);
 
-        $sparepartId = $row->sparepart_id;
-        $purchasedQty = (int)$row->purchased_quantity;
+        /* ==========================================================
+            PCB LOGIC
+        ========================================================== */
+        if (str_contains($name, 'pcb')) {
 
-        // Calculate used quantity
-        $totalUsed = 0;
+            $serviceItems = collect($pcbInService[$id] ?? [])
+                ->map(fn($x) => [
+                    'serial' => trim($x->vci_serial_no),
+                    'status' => $x->status
+                ])
+                ->toArray();
 
-        foreach ($productRequirements as $productId => $pr) {
+            $serviceSerialNumbers = array_map(fn($x) => $x['serial'], $serviceItems);
 
-            $assembledQty = $assembledCounts[$productId] ?? 0;
+            $allPurchased = $purchasedSerials[$id] ?? [];
 
-            $requirements = $pr->sparepart_requirements ?? [];
+            // available = purchased − assembled − delivered − service
+            $availableList = array_diff(
+                $allPurchased,
+                $assembledSerials,
+                $pcbDelivered,
+                $serviceSerialNumbers   // 🔥 subtract serials in service
+            );
 
-            $requiredPerProduct = collect($requirements)
-                ->firstWhere('id', $sparepartId)['required_quantity'] ?? 0;
+            $availableDetailed = array_map(function ($serial) use ($serviceSerialNumbers) {
+                return [
+                    'serial'      => $serial,
+                    'in_service'  => in_array($serial, $serviceSerialNumbers)
+                ];
+            }, array_values($availableList));
 
-            $totalUsed += ($assembledQty * $requiredPerProduct);
+            return [
+                'sparepart_id'       => $id,
+                'sparepart_name'     => $row->sparepart_name,
+                'type'               => 'pcb',
+
+                'purchased_quantity' => count($allPurchased),
+
+                // 🔥 service qty
+                'service_quantity'   => count($serviceSerialNumbers),
+
+                // 🔥 available = purchased − assembled − delivered − service
+                'available_quantity' => count($availableList),
+
+                'service_items'      => $serviceItems,
+                'available_serials'  => $availableDetailed,
+                'purchased_serials'  => $allPurchased,
+            ];
         }
 
-        // available qty = purchased - used
-        $availableQty = max($purchasedQty - $totalUsed, 0);
+        /* ==========================================================
+            NON-PCB LOGIC
+        ========================================================== */
 
-        // ⭐ Remove inventory serials from purchased serials
-        $availableSerials = array_diff(
-            $purchasedSerials[$sparepartId] ?? [],
-            $usedSerials
-        );
+        $purchasedQty = (int) $row->purchased_quantity;
+
+        // qty used in assembly
+        $totalUsed = 0;
+        foreach ($productRequirements as $productId => $pr) {
+            $assembledQty = $assembledCounts[$productId] ?? 0;
+
+            $requiredPerProduct = collect($pr->sparepart_requirements)
+                ->firstWhere('id', $id)['required_quantity'] ?? 0;
+
+            $totalUsed += $assembledQty * $requiredPerProduct;
+        }
+
+        // qty in service
+        $serviceQty = $nonPcbReturns[$id] ?? 0;
+
+        // 🔥 AVAILABLE = purchased − used − service
+        $availableQty = max($purchasedQty - $totalUsed - $serviceQty, 0);
 
         return [
-            'sparepart_id'       => $sparepartId,
+            'sparepart_id'       => $id,
             'sparepart_name'     => $row->sparepart_name,
+            'type'               => 'non-pcb',
+
             'purchased_quantity' => $purchasedQty,
             'used_quantity'      => $totalUsed,
-            'available_quantity' => $availableQty,
-            'available_serials'  => array_values($availableSerials),
+
+            'service_quantity'   => $serviceQty,     // 🔥 subtract this
+            'available_quantity' => $availableQty,    // 🔥 updated
+
         ];
     })->values();
 
     return response()->json($final);
 }
-
-
 
 
 
@@ -1033,19 +1116,14 @@ public function overall()
 
 public function getSeriesSpareparts($series)
 {
-    // Decode if frontend sends URL-encoded value
     $series = urldecode($series);
 
-    // Remove product type inside parentheses — "VCI (5-series)" → "VCI"
     if (preg_match('/^(.*)\((.*)\)$/', $series, $matches)) {
         $series = trim($matches[1]);
     }
 
-    /** --------------------------------------
-     *  Fetch Product (soft delete safe)
-     * -------------------------------------- */
     $product = Product::where('name', $series)
-        ->whereNull('deleted_at')               // 👈 soft delete
+        ->whereNull('deleted_at')             
         ->with('productTypes')
         ->first();
 
@@ -1053,9 +1131,6 @@ public function getSeriesSpareparts($series)
         return response()->json(['message' => "Product '{$series}' not found"], 404);
     }
 
-    /** --------------------------------------
-     *  Get sparepart requirements for product
-     * -------------------------------------- */
     $sparepartRequirements = $product->sparepart_requirements ?? [];
 
     if (empty($sparepartRequirements)) {
@@ -1069,15 +1144,12 @@ public function getSeriesSpareparts($series)
     $sparepartIds = collect($sparepartRequirements)->pluck('id')->toArray();
 
     $spareparts = Sparepart::whereIn('id', $sparepartIds)
-        ->whereNull('deleted_at')               // 👈 soft delete
+        ->whereNull('deleted_at')              
         ->get();
 
-    /** --------------------------------------
-     *  Count assembled VCIs (soft delete safe)
-     * -------------------------------------- */
     $assembledVCIs = DB::table('inventory')
         ->where('product_id', $product->id)
-        ->whereNull('deleted_by')               // 👈 soft delete logic
+        ->whereNull('deleted_by')               
         ->whereNull('deleted_at')
         ->count();
 
@@ -1088,18 +1160,12 @@ public function getSeriesSpareparts($series)
 
         $purchasedQty = DB::table('sparepart_purchase_items')
             ->where('sparepart_id', $part->id)
-            ->whereNull('deleted_at')           // 👈 soft delete
-            ->whereNull('deleted_by')           // 👈 soft delete
+            ->whereNull('deleted_at')           
+            ->whereNull('deleted_by')         
             ->sum('quantity');
 
-        /** -----------------------------
-         * Used quantity
-         * ----------------------------- */
         $usedQty = $assembledVCIs * $requiredPerProduct;
 
-        /** -----------------------------
-         * Available = purchased - used
-         * ----------------------------- */
         $availableQty = max($purchasedQty - $usedQty, 0);
 
         return [
@@ -1122,8 +1188,33 @@ public function getSeriesSpareparts($series)
         'spare_parts' => $sparepartsMapped,
     ]);
 }
+public function lastFourPurchases()
+{
+    $purchases = SparepartPurchase::with([
+            'vendor:id,vendor',
+            'items.sparepart:id,name'
+        ])
+        ->whereNull('deleted_at')          
+        ->orderBy('id', 'desc')            
+        ->take(4)                          
+        ->get();
 
+    $response = [];
 
+    foreach ($purchases as $purchase) {
+        foreach ($purchase->items as $item) {
+            $response[] = [
+                'purchase_id'   => $purchase->id,
+                'vendor'        => $purchase->vendor->vendor ?? 'Unknown Vendor',
+                'challan_no'    => $purchase->challan_no,
+                'challan_date'  => $purchase->challan_date,
+                'sparepart'     => $item->sparepart->name ?? null,
+                'quantity'      => $item->quantity,
+            ];
+        }
+    }
 
+    return response()->json($response);
+}
 
 }

@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 
 class SparepartPurchase extends Model
 {
-     use HasFactory;
+    use HasFactory;
     use SoftDeletes;
 
     protected $table = 'sparepart_purchase';

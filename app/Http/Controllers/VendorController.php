@@ -18,7 +18,6 @@ class VendorController extends Controller
 {
     $validator = Validator::make($request->all(), [
 
-        // Vendor Name (Required + Unique with soft delete)
         'vendor' => [
             'required', 'string', 'max:255',
             function ($attribute, $value, $fail) {
@@ -161,7 +160,6 @@ public function VendorUpdate(Request $request, $id)
 {
     $validator = Validator::make($request->all(), [
 
-        // -------------------- VENDOR VALIDATIONS --------------------
         'vendor' => [
             'required', 'string', 'max:255',
             function ($attribute, $value, $fail) use ($id) {
@@ -202,7 +200,6 @@ public function VendorUpdate(Request $request, $id)
                 ->whereNull('deleted_at'),
         ],
 
-        // -------------------- CONTACT PERSON VALIDATIONS --------------------
         'contact_persons'               => 'nullable|array',
         'contact_persons.*.name'        => 'required_with:contact_persons|string|max:255',
         'contact_persons.*.designation' => 'nullable|string|max:100',
@@ -225,7 +222,6 @@ public function VendorUpdate(Request $request, $id)
         return response()->json(['errors' => $validator->errors()], 422);
     }
 
-    // -------------------- EXTRA DUPLICATE CHECKS --------------------
     $extraErrors = [];
 
     $contacts = $request->contact_persons ?? [];
@@ -271,7 +267,6 @@ public function VendorUpdate(Request $request, $id)
         // DELETE OLD CONTACTS
         DB::table('vendor_contact_person')->where('vendor_id', $id)->delete();
 
-        // INSERT NEW CONTACTS
         if (is_array($contacts)) {
             foreach ($contacts as $cp) {
                 DB::table('vendor_contact_person')->insert([
@@ -299,10 +294,6 @@ public function VendorUpdate(Request $request, $id)
         return response()->json(['error' => $e->getMessage()], 500);
     }
 }
-
-
-
-
 
     public function VendorList()
     {
@@ -346,9 +337,6 @@ public function destroy($id)
             return response()->json(['error' => 'Vendor not found'], 404);
         }
 
-        // ---------------------------------------------
-        // 🔥 CHECK: Vendor linked with sparepart/purchase
-        // ---------------------------------------------
         $hasPurchase = SparepartPurchase::where('vendor_id', $id)->exists();
 
         if ($hasPurchase) {
@@ -357,13 +345,6 @@ public function destroy($id)
             ], 409); // 409 = conflict
         }
 
-        // You can add more if needed:
-        // $hasProductPurchase = ProductPurchase::where('vendor_id', $id)->exists();
-        // $hasServiceRecords = ServiceVCI::where('vendor_id', $id)->exists();
-
-        // ---------------------------------------------
-        // Proceed with soft delete
-        // ---------------------------------------------
         $userId = auth()->id() ?? 1;
 
         // Delete contact persons
