@@ -61,26 +61,21 @@ Route::prefix('product')->middleware(['jwt.auth'])->group(function() {
     Route::delete('/{id}', [ProductController::class, 'destroy']);
     Route::get('/types/{id}', [ProductController::class, 'getTypesByProduct']);
 });
-
-
-
-
 Route::post('/vendors/new', [VendorController::class, 'Vendorstore'])->middleware('jwt.auth');
 Route::get('/{id}/edit', [VendorController::class, 'VendorEdit'])->middleware('jwt.auth');
 Route::put('/{id}', [VendorController::class, 'VendorUpdate'])->middleware('jwt.auth');
 Route::get('/vendorsget', [VendorController::class, 'VendorList'])->middleware('jwt.auth');
 Route::get('/vendors/get/{id}', [VendorController::class, 'show'])->middleware('jwt.auth');
 Route::delete('/vendors/{id}', [VendorController::class, 'destroy'])->middleware('jwt.auth');
+Route::get('/vendors/count', [VendorController::class, 'VendorCount'])->middleware('jwt.auth');
 
-
-
+Route::get('/customers/count', [CustomerController::class, 'customercount'])->middleware('jwt.auth');
 Route::post('/customers', [CustomerController::class, 'store'])->middleware('jwt.auth');
 Route::get('customers/{id}/edit', [CustomerController::class, 'edit'])->middleware('jwt.auth');
 Route::put('customers/{id}', [CustomerController::class, 'update'])->middleware('jwt.auth');
 Route::delete('customers/del/{id}', [CustomerController::class, 'destroy'])->middleware('jwt.auth');
 Route::get('/customers/get', [CustomerController::class, 'index'])->middleware('jwt.auth');
 Route::get('/customers/{id}', [CustomerController::class, 'show'])->middleware('jwt.auth');
-
 
 Route::post('/spareparts', [SparepartController::class, 'store'])->middleware('jwt.auth');
 Route::get('/spareparts/{id}/edit', [SparepartController::class, 'edit'])->middleware('jwt.auth');
@@ -93,10 +88,8 @@ Route::post('/sparepartNew-purchases', [SparepartPurchaseController::class, 'sto
 Route::get('/sparepart-purchases', [SparepartPurchaseController::class, 'index'])->middleware('jwt.auth');
 Route::get('{id}/purchase/edit', [SparepartPurchaseController::class, 'edit'])->middleware('jwt.auth');
 Route::put('/purchaseUpdate/{id}', [SparepartPurchaseController::class, 'update'])->middleware('jwt.auth');
-
 Route::get('/available-serials', [SparepartPurchaseController::class, 'availableSerials'])->middleware('jwt.auth');
 Route::delete('/sparepart-purchase-items/{id}', [SparepartPurchaseController::class, 'destroy'])->middleware('jwt.auth');
-// routes/api.php
 Route::get('/sparepart-purchases/view/{id}', [SparepartPurchaseController::class, 'show'])->middleware('jwt.auth');
 Route::post('/check-sparepart-serials', [SparepartPurchaseController::class, 'checkSerials'])->middleware('jwt.auth');
 Route::get('/get-purchase', [SparepartPurchaseController::class, 'view'])->middleware('jwt.auth');
@@ -106,8 +99,6 @@ Route::get('/vci-capacity', [SparepartPurchaseController::class, 'components'])-
 Route::get('/product-types/product/{id}', [ProductTypeController::class, 'getProduct'])->middleware('jwt.auth');
 Route::delete('/purchase-items/{purchaseId}/{itemId}', [SparepartPurchaseController::class, 'deleteItem'])->middleware('jwt.auth');
 Route::get('/sparepart-purchases/overall', [SparepartPurchaseController::class, 'overall']);
-
-
 Route::get('/inventory/serial-numbers', [InventoryController::class, 'serialNumbers'])->middleware('jwt.auth');
 Route::prefix('inventory')->middleware(['jwt.auth'])->group(function(){
 Route::get('/show', [InventoryController::class, 'getAllItems']);
@@ -115,14 +106,15 @@ Route::get('/serialrange/{from_serial}/{to_serial}', [InventoryController::class
 Route::put('/serialrange/{from_serial}/{to_serial}', [InventoryController::class, 'updateSerialRange']);
 Route::get('/serialranges', [InventoryController::class, 'serialRanges']);
 Route::delete('/serialrange/{from_serial}/{to_serial}', [InventoryController::class, 'deleteSerialRange']);
-    Route::get('/', [InventoryController::class, 'index']);
-    Route::get('/{id}', [InventoryController::class, 'show']);
-    Route::post('/', [InventoryController::class, 'store']);
-    Route::put('/{id}', [InventoryController::class, 'update']);
-    Route::delete('/{id}', [InventoryController::class, 'destroy']);
-    // Route::post('/{serial_number}', [InventoryController::class, 'deleteSerial']);
-    Route::get('/missing-serials/{from_serial}/{to_serial}', [InventoryController::class, 'getMissingSerials']);
+Route::get('/', [InventoryController::class, 'index']);
+Route::get('/{id}', [InventoryController::class, 'show']);
+Route::post('/', [InventoryController::class, 'store']);
+Route::put('/{id}', [InventoryController::class, 'update']);
+Route::delete('/{id}', [InventoryController::class, 'destroy']);
+// Route::post('/{serial_number}', [InventoryController::class, 'deleteSerial']);
+Route::get('/missing-serials/{from_serial}/{to_serial}', [InventoryController::class, 'getMissingSerials']);
 });
+Route::get('/products/available/count', [InventoryController::class, 'availableProductCount'])->middleware('jwt.auth');
 
 Route::post('/check-serials-purchased', [InventoryController::class, 'checkSerialsPurchased']) ->middleware('jwt.auth');
 Route::get('/inventory/serials/active', [InventoryController::class, 'getAllActiveSerials'])->middleware('jwt.auth');
@@ -132,7 +124,6 @@ Route::get('/sales/product-status/{productId}', [SalesController::class, 'getSol
 Route::get('/sales/product-summary', [SalesController::class, 'getProductSaleSummary'])->middleware('jwt.auth');
 
 
-//Sales
 Route::get('/sales', [SalesController::class, 'index'])->middleware('jwt.auth');        
 Route::post('/sales', [SalesController::class, 'store'])->middleware('jwt.auth');      
 Route::get('/sales/{id}', [SalesController::class, 'show'])->middleware('jwt.auth');    
@@ -140,8 +131,8 @@ Route::put('/sales/{id}', [SalesController::class, 'update'])->middleware('jwt.a
 Route::delete('/sales/{id}', [SalesController::class, 'destroy'])->middleware('jwt.auth');
 Route::get('/testings', [SalesController::class, 'getTestingData'])->middleware('jwt.auth');
 Route::get('/added-serials', [SalesController::class, 'addedSerials'])->middleware('jwt.auth');
-
-//service
+Route::get('spareparts/check-qty/{id}', [ServiceVCIManagementController::class, 'checkQty']);
+Route::get('/sales-summary', [SalesController::class, 'getLastFourSales'])->middleware('jwt.auth');
 Route::get('/service-vci', [ServiceVCIManagementController::class, 'index'])->middleware('jwt.auth');
 Route::post('/service-vci', [ServiceVCIManagementController::class, 'store'])->middleware('jwt.auth');
 Route::get('/service-vci/{id}', [ServiceVCIManagementController::class, 'show'])->middleware('jwt.auth');
@@ -155,5 +146,10 @@ Route::delete('/purchase-items/{purchase_id}/{sparepart_id}', [SparepartControll
 Route::get('/sales/serials/{productId}', [SalesController::class, 'getSaleSerials'])->middleware('jwt.auth');
 Route::get('/products/{productId}/serials', [SalesController::class, 'getProductSerials'])->middleware('jwt.auth');
 Route::apiResource('technicians', TechnicianController::class)->middleware('jwt.auth');
+Route::get('/products/sold/count', [SalesController::class, 'getTotalProductSalesCount'])->middleware('jwt.auth');
+Route::get('/get-purchase',[SparepartPurchaseController::class,'lastFourPurchases'])->middleware('jwt.auth');
 
 
+
+Route::get('/getProductStock/{id}', [ProductController::class, 'getProductStock'])->middleware('jwt.auth');
+Route::get('/products/stock/all', [ProductController::class, 'getAllProductStocks']);
