@@ -12,7 +12,6 @@ use App\Models\Sparepart;
 
 class ProductController extends Controller
 {
-    // ✅ Fetch all products with types, spareparts + required qty per product
 public function index()
 {
     $products = Product::whereNull('deleted_at')
@@ -71,7 +70,6 @@ public function index()
 }
 
 
-    // ✅ Show one product with types & spare parts
     public function show($id)
     {
         $product = Product::where('id', $id)
@@ -124,7 +122,6 @@ public function index()
         ]);
     }
 
-    // ✅ Create new product with sparepart requirements (JSON)
     public function store(Request $request)
     {
         $validated = $request->validate([
@@ -192,7 +189,6 @@ public function update(Request $request, $id)
 }
 
 
-    // ✅ Soft delete
     public function destroy($id)
     {
         $product = Product::where('id', $id)->whereNull('deleted_at')->first();
@@ -248,4 +244,129 @@ public function update(Request $request, $id)
             'product_types' => $product->productTypes,
         ]);
     }
+public function getProductStock($productId)
+{
+    try {
+        // Fetch product
+        $product = Product::where('id', $productId)
+            ->whereNull('deleted_at')
+            ->first();
+
+        if (!$product) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Product not found'
+            ], 404);
+        }
+
+        // Sparepart requirements for this product
+        $requirements = $product->sparepart_requirements ?? [];
+
+        if (empty($requirements)) {
+            return response()->json([
+                'success' => true,
+                'assembled_stock' => 0,
+                'possible_to_build' => 0,
+                'spareparts' => []
+            ]);
+        }
+
+        // Total assembled PCB/VCI count
+        $assembled = DB::table('inventory')
+            ->whereNull('deleted_by')
+            ->count();
+
+        $sparepartStock = [];
+        $possibleBuildCounts = [];
+
+        foreach ($requirements as $req) {
+
+            $sparepartId = $req['id'];
+            $requiredQty = $req['required_quantity'];
+
+            // Purchased quantity of this sparepart
+            $purchasedQty = DB::table('sparepart_purchase_items')
+                ->where('sparepart_id', $sparepartId)
+                ->sum('quantity');
+
+            // Qty consumed in assembled products
+            $usedQty = $assembled * $requiredQty;
+
+            // Available sparepart qty
+            $availableQty = max($purchasedQty - $usedQty, 0);
+
+            // Calculate possible builds from this sparepart
+            $canBuild = $requiredQty > 0 
+                ? floor($availableQty / $requiredQty) 
+                : 0;
+
+            $possibleBuildCounts[] = $canBuild;
+
+            $part = Sparepart::find($sparepartId);
+
+            $sparepartStock[] = [
+                'id' => $sparepartId,
+                'name' => $part->name ?? 'Unknown',
+                'required_per_product' => $requiredQty,
+                'purchased_quantity' => $purchasedQty,
+                'used_quantity' => $usedQty,
+                'available_quantity' => $availableQty,
+                'can_build' => $canBuild
+            ];
+        }
+
+        // Final possible units = minimum from all spareparts
+        $finalPossible = min($possibleBuildCounts);
+
+        return response()->json([
+            'success' => true,
+            'assembled_stock' => $assembled,
+            'possible_to_build' => $finalPossible,
+            'spareparts' => $sparepartStock
+        ]);
+
+    } catch (\Exception $e) {
+        return response()->json([
+            'success' => false,
+            'message' => $e->getMessage()
+        ], 500);
+    }
+}
+
+
+public function getAllProductStocks()
+{
+    try {
+        $products = Product::whereNull('deleted_at')->get();
+        $response = [];
+
+        foreach ($products as $product) {
+
+            // Call internal method correctly
+            $stock = $this->getProductStock($product->id)->getData(true);
+
+            $response[] = [
+                'id' => $product->id,
+                'name' => $product->name,
+                'assembled_stock' => $stock['assembled_stock'] ?? 0,
+                'possible_to_build' => $stock['possible_to_build'] ?? 0,
+                'spareparts' => $stock['spareparts'] ?? []
+            ];
+        }
+
+        return response()->json([
+            'success' => true,
+            'products' => $response
+        ]);
+
+    } catch (\Exception $e) {
+        return response()->json([
+            'success' => false,
+            'message' => $e->getMessage()
+        ], 500);
+    }
+}
+
+
+
 }

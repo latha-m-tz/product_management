@@ -106,7 +106,7 @@ $saleDetails = $sales->map(function ($sale) use ($serial_number) {
         return [
             'id' => $item->id,
             'sale_id' => $sale->id,
-                                'serial_no' => $item->serial_no,
+            'serial_no' => $item->serial_no,
                     'quantity' => $item->quantity,
                     'product' => $item->product?->name,
                     'inventory' => $item->inventory ? [

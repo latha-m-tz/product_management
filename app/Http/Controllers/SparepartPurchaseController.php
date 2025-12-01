@@ -21,11 +21,28 @@ public function store(Request $request)
 {
     $request->validate([
         'vendor_id' => 'required|integer|exists:vendors,id',
-        'challan_no' => 'required|string|max:50|unique:sparepart_purchase,challan_no',
+
+        'challan_no' => [
+            'required',
+            'string',
+            'max:50',
+            function ($attribute, $value, $fail) {
+                $exists = DB::table('sparepart_purchase')
+                    ->where('challan_no', $value)
+                    ->whereNull('deleted_at')  
+                    ->exists();
+
+                if ($exists) {
+                    $fail("The $attribute has already been taken.");
+                }
+            }
+        ],
+
         'tracking_number' => 'nullable|string|max:100',
         'challan_date' => ['required', 'before_or_equal:today'],
         'received_date' => ['required', 'before_or_equal:today'],
         'courier_name' => 'nullable|string|max:100',
+
         'items' => 'required|array|min:1',
         'items.*.product_id' => 'nullable|integer|exists:product,id',
         'items.*.sparepart_id' => 'nullable|integer|exists:spareparts,id',
@@ -34,6 +51,7 @@ public function store(Request $request)
         'items.*.serial_no' => 'nullable|string|max:100',
         'items.*.from_serial' => ['nullable', 'regex:/^\d{1,6}$/'],
         'items.*.to_serial' => ['nullable', 'regex:/^\d{1,6}$/'],
+
         'document_recipient.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:2048',
     ]);
 
@@ -42,7 +60,7 @@ public function store(Request $request)
     try {
         $recipientFiles = [];
 
-        // ✅ Handle uploaded recipient documents
+        // Upload recipient files
         if ($request->hasFile('document_recipient')) {
             foreach ($request->file('document_recipient') as $file) {
                 $filename = time() . '_' . uniqid() . '_' . $file->getClientOriginalName();
@@ -51,7 +69,7 @@ public function store(Request $request)
             }
         }
 
-        // ✅ Create main purchase record
+        // Create main purchase entry
         $purchase = SparepartPurchase::create([
             'vendor_id' => $request->vendor_id,
             'challan_no' => $request->challan_no,
@@ -65,14 +83,15 @@ public function store(Request $request)
 
         $serialsToInsert = [];
 
-        // ✅ Loop through items to prepare insert data
         foreach ($request->items as $index => $item) {
-            $from = isset($item['from_serial']) ? intval($item['from_serial']) : null;
-            $to = isset($item['to_serial']) ? intval($item['to_serial']) : null;
+
+            $from = $item['from_serial'] ?? null;
+            $to   = $item['to_serial'] ?? null;
 
             if ($from && $to) {
-                // 🔹 Add each serial in the given range
-                for ($i = $from; $i <= $to; $i++) {
+
+                // Range serial insert
+                for ($i = intval($from); $i <= intval($to); $i++) {
                     $serialsToInsert[] = [
                         'purchase_id' => $purchase->id,
                         'product_id' => $item['product_id'] ?? null,
@@ -82,12 +101,14 @@ public function store(Request $request)
                         'serial_no' => $i,
                         'from_serial' => $from,
                         'to_serial' => $to,
-                        'group_index' => $index + 1, // ✅ assign unique group per range row
+                        'group_index' => $index + 1,
                         'created_by' => auth()->id(),
                     ];
                 }
+
             } else {
-                // 🔹 Non-range entries (manual serial or quantity)
+
+                // Manual serial / no-range
                 $serialsToInsert[] = [
                     'purchase_id' => $purchase->id,
                     'product_id' => $item['product_id'] ?? null,
@@ -103,13 +124,14 @@ public function store(Request $request)
             }
         }
 
-        // ✅ Duplicate serial number check (for same product & sparepart)
         $duplicateSerials = [];
+
         foreach ($serialsToInsert as $s) {
             if (empty($s['serial_no'])) continue;
 
             $query = SparepartPurchaseItem::where('serial_no', $s['serial_no'])
-                ->where('sparepart_id', $s['sparepart_id']);
+                ->where('sparepart_id', $s['sparepart_id'])
+                ->whereNull('deleted_at');   
 
             if (!empty($s['product_id'])) {
                 $query->where('product_id', $s['product_id']);
@@ -124,6 +146,7 @@ public function store(Request $request)
 
         if (!empty($duplicateSerials)) {
             $duplicateSerials = array_unique($duplicateSerials);
+
             DB::rollBack();
             return response()->json([
                 'message' => 'The following serial numbers are already purchased: ' . implode(', ', $duplicateSerials),
@@ -131,7 +154,7 @@ public function store(Request $request)
             ], 422);
         }
 
-        // ✅ Insert all new serials into DB
+        // Insert items
         foreach ($serialsToInsert as $record) {
             SparepartPurchaseItem::create($record);
         }
@@ -149,6 +172,7 @@ public function store(Request $request)
 
     } catch (\Throwable $e) {
         DB::rollBack();
+
         return response()->json([
             'message' => 'Error saving purchase',
             'error' => $e->getMessage(),
@@ -187,50 +211,64 @@ $categories = DB::table('product')
 
 public function index(Request $request)
 {
-   $query = DB::table('sparepart_purchase as p')
-    ->leftJoin('vendors as v', 'p.vendor_id', '=', 'v.id')
+    $query = DB::table('sparepart_purchase as p')
+        ->leftJoin('vendors as v', 'p.vendor_id', '=', 'v.id')
 
-    ->leftJoin('sparepart_purchase_items as pi', 'p.id', '=', 'pi.purchase_id')
-    ->leftJoin('product as c', 'pi.product_id', '=', 'c.id')
-    ->leftJoin('spareparts as s', 'pi.sparepart_id', '=', 's.id')
-    ->select(
-        'p.id as purchase_id',
-        'p.challan_no',
-        'p.challan_date',
-        'v.id as vendor_id',
-        // 'v.vendor as vendor_name',
-                DB::raw("COALESCE(v.vendor, 'Deleted Vendor') as vendor_name"),
-        'pi.id as item_id',
-        'pi.quantity as item_quantity',
-        'pi.serial_no',
-        'pi.warranty_status',
-        'c.id as product_id',
-        'c.name as product_name',
-        's.id as sparepart_id',
-        's.name as sparepart_name',
-        DB::raw('SUM(pi.quantity) OVER (PARTITION BY p.id) as total_quantity') 
-    )
-    ->orderBy('p.id', 'desc');
+        ->leftJoin('sparepart_purchase_items as pi', function ($join) {
+            $join->on('p.id', '=', 'pi.purchase_id')
+                 ->whereNull('pi.deleted_at');  
+        })
 
+        ->leftJoin('product as c', 'pi.product_id', '=', 'c.id')
+        ->leftJoin('spareparts as s', 'pi.sparepart_id', '=', 's.id')
+        ->select(
+            'p.id as purchase_id',
+            'p.challan_no',
+            'p.challan_date',
+            'v.id as vendor_id',
+
+            // Vendor safe-value if vendor is deleted
+            DB::raw("COALESCE(v.vendor, 'Deleted Vendor') as vendor_name"),
+
+            'pi.id as item_id',
+            'pi.quantity as item_quantity',
+            'pi.serial_no',
+            'pi.warranty_status',
+
+            'c.id as product_id',
+            'c.name as product_name',
+
+            's.id as sparepart_id',
+            's.name as sparepart_name',
+
+            // Total quantity per purchase
+            DB::raw('SUM(pi.quantity) OVER (PARTITION BY p.id) as total_quantity')
+        )
+
+        // ✅ ensure only active (non-deleted) purchases shown
+        ->whereNull('p.deleted_at')
+
+        ->orderBy('p.id', 'desc');
 
     $results = $query->get();
 
-    // Group items under purchase
     $grouped = $results->groupBy('purchase_id')->map(function ($items) {
         $first = $items->first();
+
         return [
-            'purchase_id'   => $first->purchase_id,
-            'challan_no'    => $first->challan_no,
-            'challan_date'  => $first->challan_date,
-            'total_quantity'=> $first->total_quantity,
+            'purchase_id'    => $first->purchase_id,
+            'challan_no'     => $first->challan_no,
+            'challan_date'   => $first->challan_date,
+            'total_quantity' => $first->total_quantity,
+
             'vendor' => [
                 'id'   => $first->vendor_id,
                 'name' => $first->vendor_name,
             ],
+
             'items' => $items->map(function ($item) {
                 return [
                     'item_id'        => $item->item_id,
-                    // 'product_id'     => $item->product_id,
                     'product_name'   => $item->product_name,
                     'sparepart_id'   => $item->sparepart_id,
                     'sparepart_name' => $item->sparepart_name,
@@ -244,6 +282,7 @@ public function index(Request $request)
 
     return response()->json($grouped);
 }
+
 public function edit($id)
 {
     $purchase = SparepartPurchase::with(['items.product', 'items.sparepart', 'vendor'])
@@ -263,7 +302,6 @@ public function edit($id)
         'challan_date' => $purchase->challan_date ? \Carbon\Carbon::parse($purchase->challan_date)->format('d-m-Y') : null,
         'received_date' => $purchase->received_date ? \Carbon\Carbon::parse($purchase->received_date)->format('d-m-Y') : null,
         'document_recipient' => $recipientFiles,
-
         'items' => $purchase->items->map(function ($item) {
             // Ensure from_serial and to_serial are integers if present
             $fromSerial = $item->from_serial ?? $item->serial_no;
@@ -295,42 +333,54 @@ public function update(Request $request, $id)
 
     $request->validate([
         'vendor_id' => 'required|integer|exists:vendors,id',
+
         'challan_no' => [
             'required',
             'string',
             'max:50',
-            Rule::unique('sparepart_purchase', 'challan_no')->ignore($purchase->id),
+            function ($attribute, $value, $fail) use ($id) {
+                $exists = DB::table('sparepart_purchase')
+                    ->where('challan_no', $value)
+                    ->where('id', '!=', $id)
+                    ->whereNull('deleted_at')  // 👈 ignore soft deleted
+                    ->exists();
+
+                if ($exists) {
+                    $fail("The $attribute has already been taken.");
+                }
+            }
         ],
+
         'tracking_number' => 'nullable|string|max:100',
         'challan_date' => ['required', 'date_format:Y-m-d', 'before_or_equal:today'],
-        'received_date' => ['required', 'date_format:Y-m-d', 'before_or_equal:today'],
+'received_date' => ['required', 'date', 'before_or_equal:today'],   
         'courier_name' => 'nullable|string|max:100',
+
         'items' => 'nullable|array|min:1',
         'items.*.id' => 'nullable|integer',
         'items.*.sparepart_id' => 'nullable|integer|exists:spareparts,id',
         'items.*.quantity' => 'required|integer|min:1',
         'items.*.warranty_status' => 'nullable|string|max:50',
         'items.*.serials' => 'nullable|array',
+
         'deleted_ids' => 'nullable|array',
         'deleted_ids.*' => 'integer|exists:sparepart_purchase_items,id',
+
         'document_recipient' => 'nullable|array',
         'document_recipient.*' => 'file|mimes:jpg,jpeg,png,pdf|max:2048',
+
         'document_challan' => 'nullable|array',
-        'document_challan.*' => 'file|mimes:jpg,jpeg,png,pdf|max:2048', // max 2 MB per file
+        'document_challan.*' => 'file|mimes:jpg,jpeg,png,pdf|max:2048',
     ]);
 
     DB::beginTransaction();
 
     try {
-        /** --------------------------
-         * Handle uploaded files
-         * -------------------------- */
         $recipientFiles = $purchase->document_recipient ?? [];
-        $challanFiles = $purchase->document_challan ?? [];
 
         if ($request->filled('removed_recipient_files')) {
-            $removedRecipientFiles = json_decode($request->removed_recipient_files, true);
-            $recipientFiles = array_values(array_diff($recipientFiles, $removedRecipientFiles));
+            $removedFiles = json_decode($request->removed_recipient_files, true);
+            $recipientFiles = array_values(array_diff($recipientFiles, $removedFiles));
         }
 
         if ($request->hasFile('document_recipient')) {
@@ -341,45 +391,43 @@ public function update(Request $request, $id)
             }
         }
 
-        /** --------------------------
-         * Update main purchase
-         * -------------------------- */
         $purchase->update([
             'vendor_id' => $request->vendor_id,
             'challan_no' => $request->challan_no,
             'tracking_number' => $request->tracking_number,
-            'challan_date' => Carbon::createFromFormat('Y-m-d', $request->challan_date)->format('Y-m-d'),
-            'received_date' => Carbon::createFromFormat('Y-m-d', $request->received_date)->format('Y-m-d'),
+            'challan_date' => $request->challan_date,
+            'received_date' => $request->received_date,
             'courier_name' => $request->courier_name,
             'document_recipient' => $recipientFiles,
             'updated_by' => auth()->id(),
         ]);
 
+
         if (!empty($request->deleted_ids)) {
             SparepartPurchaseItem::whereIn('id', $request->deleted_ids)->delete();
         }
 
-        /** --------------------------
-         * Process each item
-         * -------------------------- */
+
         $totalQuantity = 0;
         $allSubmittedSerials = [];
 
         foreach ($request->items ?? [] as $item) {
-            $serials = array_filter($item['serials'] ?? []); // remove empty values
 
-            // Check duplicates in request
-            $duplicateInRequest = collect($serials)->duplicates()->all();
-            if (!empty($duplicateInRequest)) {
-                return response()->json([
-                    'errors' => ['items' => ['Duplicate serial(s) in request: ' . implode(', ', $duplicateInRequest)]]
-                ], 422);
-            }
+            $serials = array_filter($item['serials'] ?? []);
 
-            // Check duplicates in DB excluding current purchase
-            if (count($serials) > 0) {
+            if (!empty($serials)) {
+
+                $duplicateInRequest = collect($serials)->duplicates()->all();
+                if (!empty($duplicateInRequest)) {
+                    return response()->json([
+                        'errors' => ['items' => ['Duplicate serial(s) in request: ' . implode(', ', $duplicateInRequest)]]
+                    ], 422);
+                }
+
+                // Duplicates inside DB (soft delete aware)
                 $existingSerials = SparepartPurchaseItem::whereIn('serial_no', $serials)
                     ->where('purchase_id', '!=', $purchase->id)
+                    ->whereNull('deleted_at')  // 👈 soft delete logic added
                     ->pluck('serial_no')
                     ->toArray();
 
@@ -390,10 +438,9 @@ public function update(Request $request, $id)
                 }
             }
 
-            // Add serials to global tracker
             $allSubmittedSerials = array_merge($allSubmittedSerials, $serials);
 
-            if (count($serials) > 0) {
+            if (!empty($serials)) {
                 foreach ($serials as $serial) {
                     SparepartPurchaseItem::updateOrCreate(
                         [
@@ -409,8 +456,8 @@ public function update(Request $request, $id)
                     );
                 }
                 $totalQuantity += count($serials);
+
             } else {
-                // Non-serialized sparepart
                 SparepartPurchaseItem::updateOrCreate(
                     [
                         'purchase_id' => $purchase->id,
@@ -427,34 +474,45 @@ public function update(Request $request, $id)
             }
         }
 
-        /** --------------------------
-         * Delete only unsubmitted serials (fix for multiple ranges)
-         * -------------------------- */
-        if (!empty($allSubmittedSerials)) {
-            SparepartPurchaseItem::where('purchase_id', $purchase->id)
-                ->whereNotIn('serial_no', $allSubmittedSerials)
-                ->delete();
-        }
+
+SparepartPurchaseItem::where('purchase_id', $purchase->id)
+    ->whereNotNull('serial_no')
+    ->whereNotIn('serial_no', $allSubmittedSerials)
+    ->delete();
+
+
+    $submittedNonSerialSpareparts = collect($request->items)
+    ->filter(fn($item) => empty($item['serials']))
+    ->pluck('sparepart_id')
+    ->toArray();
+
+SparepartPurchaseItem::where('purchase_id', $purchase->id)
+    ->whereNull('serial_no')
+    ->whereNotIn('sparepart_id', $submittedNonSerialSpareparts)
+    ->delete();
+
 
         $purchase->update(['quantity' => $totalQuantity]);
         $purchase->load('items.sparepart', 'items.product');
 
-        /** --------------------------
-         * Prepare response items
-         * -------------------------- */
+
         $purchaseItems = collect();
 
         $purchase->items
             ->groupBy(fn($item) => $item->sparepart_id . '_' . ($item->product_id ?? 'null'))
             ->each(function ($group) use ($purchaseItems) {
+
                 $sparepartId = $group->first()->sparepart_id;
                 $productId = $group->first()->product_id;
                 $warrantyStatus = $group->first()->warranty_status;
 
-                // Sort serial numbers numerically
-                $serials = $group->pluck('serial_no')->filter()->sort(function ($a, $b) {
-                    return (int)preg_replace('/\D/', '', $a) <=> (int)preg_replace('/\D/', '', $b);
-                })->values()->toArray();
+                $serials = $group->pluck('serial_no')
+                    ->filter()
+                    ->sort(function ($a, $b) {
+                        return (int)preg_replace('/\D/', '', $a) <=> (int)preg_replace('/\D/', '', $b);
+                    })
+                    ->values()
+                    ->toArray();
 
                 if (empty($serials)) {
                     $purchaseItems->push([
@@ -470,16 +528,15 @@ public function update(Request $request, $id)
                     return;
                 }
 
-                // Split serials into contiguous ranges
+                // Convert serial list → ranges
                 $range = [$serials[0]];
                 for ($i = 1; $i < count($serials); $i++) {
-                    $prevNum = (int)preg_replace('/\D/', '', $serials[$i - 1]);
-                    $currNum = (int)preg_replace('/\D/', '', $serials[$i]);
+                    $prev = (int)preg_replace('/\D/', '', $serials[$i - 1]);
+                    $curr = (int)preg_replace('/\D/', '', $serials[$i]);
 
-                    if ($currNum === $prevNum + 1) {
+                    if ($curr === $prev + 1) {
                         $range[] = $serials[$i];
                     } else {
-                        // Save current range
                         $purchaseItems->push([
                             'id' => $group->first()->id,
                             'sparepart_id' => $sparepartId,
@@ -490,12 +547,11 @@ public function update(Request $request, $id)
                             'to_serial' => end($range),
                             'serials' => $range,
                         ]);
-                        // Start a new range
                         $range = [$serials[$i]];
                     }
                 }
 
-                // Push last range
+                // Final range
                 if (!empty($range)) {
                     $purchaseItems->push([
                         'id' => $group->first()->id,
@@ -510,42 +566,75 @@ public function update(Request $request, $id)
                 }
             });
 
-        $purchaseItems = $purchaseItems->values();
 
         DB::commit();
 
         return response()->json([
             'message' => 'Spare part purchase updated successfully',
             'quantity' => $totalQuantity,
-            'items' => $purchaseItems,
+            'items' => $purchaseItems->values(),
             'documents' => [
                 'recipients' => $recipientFiles,
-                // 'challans' => $challanFiles,
             ],
         ], 200);
 
     } catch (\Throwable $e) {
+
         DB::rollBack();
+
         return response()->json([
             'message' => 'Update failed',
             'error' => $e->getMessage(),
+            'line' => $e->getLine(),
         ], 500);
     }
 }
 
-
 public function destroy($id)
 {
-    DB::transaction(function () use ($id) {
-        SparepartPurchaseItem::where('purchase_id', $id)->delete();
-        SparepartPurchase::findOrFail($id)->delete();
-    });
+    $purchase = SparepartPurchase::find($id);
 
-    return response()->json([
-        'message' => 'Purchase and its items deleted successfully'
-    ]);
+    if (!$purchase) {
+        return response()->json([
+            'message' => 'Sparepart purchase not found'
+        ], 404);
+    }
+
+    DB::beginTransaction();
+
+    try {
+        $items = SparepartPurchaseItem::where('purchase_id', $id)->get();
+
+        foreach ($items as $item) {
+            $item->deleted_by = auth()->id();
+            $item->save();
+            $item->delete(); // soft delete
+        }
+
+        $purchase->deleted_by = auth()->id();
+        $purchase->save();
+        $purchase->delete(); // soft delete
+
+        DB::commit();
+
+        return response()->json([
+            'message' => 'Purchase and its items deleted successfully'
+        ], 200);
+
+    } catch (\Throwable $e) {
+        DB::rollBack();
+
+        Log::error("Failed deleting purchase ID {$id}: {$e->getMessage()}", [
+            'trace' => $e->getTraceAsString()
+        ]);
+
+        return response()->json([
+            'message' => 'Delete failed',
+            'error' => $e->getMessage(),
+            'line' => $e->getLine(),
+        ], 500);
+    }
 }
-
 
 public function availableSerials(Request $request)
 {
@@ -617,7 +706,6 @@ public function view()
         ->take(10)
         ->get();
 
-    // Flatten the purchases into rows (vendor, challan, product, quantity)
     $response = [];
 
     foreach ($purchases as $purchase) {
@@ -646,6 +734,11 @@ public function deleteItem($purchaseId, $itemId)
         ], 404);
     }
 
+    // ✅ Store deleted_by before soft delete
+    $item->deleted_by = auth()->id();
+    $item->save();
+
+    // ✅ Soft delete
     $item->delete();
 
     return response()->json([
@@ -653,6 +746,7 @@ public function deleteItem($purchaseId, $itemId)
         'deleted_item_id' => $itemId
     ]);
 }
+
 
   public function components()
 {
@@ -743,6 +837,221 @@ public function getAllSeriesCounts()
         'data' => $results
     ]);
 }
+public function overall()
+{
+    /* ---------------------------------------------------
+        1. Purchased Quantities
+    --------------------------------------------------- */
+    $purchased = DB::table('sparepart_purchase_items as pi')
+        ->leftJoin('spareparts as sp', 'pi.sparepart_id', '=', 'sp.id')
+        ->whereNull('pi.deleted_at')
+        ->whereNull('pi.deleted_by')
+        ->select(
+            'pi.sparepart_id',
+            'sp.name as sparepart_name',
+            DB::raw('SUM(pi.quantity) as purchased_quantity')
+        )
+        ->groupBy('pi.sparepart_id', 'sp.name')
+        ->orderBy('sp.name')
+        ->get()
+        ->keyBy('sparepart_id');
+
+    if ($purchased->isEmpty()) {
+        return response()->json([]);
+    }
+
+    /* ---------------------------------------------------
+        2. Purchased Serials (PCB only)
+    --------------------------------------------------- */
+    $purchasedSerialsRaw = DB::table('sparepart_purchase_items')
+        ->whereNull('deleted_at')
+        ->whereNull('deleted_by')
+        ->whereNotNull('serial_no')
+        ->select('sparepart_id', 'serial_no')
+        ->get();
+
+    $purchasedSerials = [];
+    foreach ($purchasedSerialsRaw as $r) {
+        $purchasedSerials[$r->sparepart_id][] = trim($r->serial_no);
+    }
+
+    foreach ($purchasedSerials as $id => $list) {
+        $purchasedSerials[$id] = array_values(array_unique($list));
+    }
+
+    /* ---------------------------------------------------
+        3. Assembled Serial Numbers
+    --------------------------------------------------- */
+    $assembledSerials = DB::table('inventory')
+        ->whereNotNull('serial_no')
+        ->whereNull('deleted_at')
+        ->pluck('serial_no')
+        ->map(fn($x) => trim($x))
+        ->toArray();
+
+    $assembledSerials = array_unique($assembledSerials);
+
+    /* ---------------------------------------------------
+        4. Assembly counts per product
+    --------------------------------------------------- */
+    $assembledCounts = DB::table('inventory')
+        ->whereNull('deleted_by')
+        ->whereNull('deleted_at')
+        ->select('product_id', DB::raw('COUNT(*) as assembled_qty'))
+        ->groupBy('product_id')
+        ->pluck('assembled_qty', 'product_id');
+
+    /* ---------------------------------------------------
+        5. Product Requirements
+    --------------------------------------------------- */
+    $productRequirements = DB::table('product')
+        ->whereNull('deleted_at')
+        ->select('id', 'sparepart_requirements')
+        ->get()
+        ->map(function ($row) {
+            $row->sparepart_requirements = json_decode($row->sparepart_requirements, true) ?? [];
+            return $row;
+        })
+        ->keyBy('id');
+
+    /* ---------------------------------------------------
+        6. PCB items currently in service
+    --------------------------------------------------- */
+    $pcbInService = DB::table('service_vci_items')
+        ->whereNotNull('vci_serial_no')
+        ->whereIn('status', ['Inward', 'Testing'])
+        ->whereNull('deleted_at')
+        ->select('sparepart_id', 'vci_serial_no', 'status')
+        ->get()
+        ->groupBy('sparepart_id');
+
+    /* ---------------------------------------------------
+        7. PCB serials already delivered
+    --------------------------------------------------- */
+    $pcbDelivered = DB::table('service_vci_items')
+        ->whereNotNull('vci_serial_no')
+        ->where('status', 'Delivered')
+        ->whereNull('deleted_at')
+        ->pluck('vci_serial_no')
+        ->map(fn($x) => trim($x))
+        ->toArray();
+
+    /* ---------------------------------------------------
+        8. Non-PCB service quantity (Return)
+    --------------------------------------------------- */
+    $nonPcbReturns = DB::table('service_vci_items')
+        ->whereNotNull('quantity')
+        ->where('status', 'Return')
+        ->whereNull('deleted_at')
+        ->select('sparepart_id', DB::raw('SUM(quantity) as return_qty'))
+        ->groupBy('sparepart_id')
+        ->pluck('return_qty', 'sparepart_id');
+
+    /* ---------------------------------------------------
+        FINAL PROCESSING
+    --------------------------------------------------- */
+    $final = $purchased->map(function ($row) use (
+        $purchasedSerials,
+        $assembledSerials,
+        $productRequirements,
+        $assembledCounts,
+        $pcbInService,
+        $pcbDelivered,
+        $nonPcbReturns
+    ) {
+        $id   = $row->sparepart_id;
+        $name = strtolower($row->sparepart_name);
+
+        /* ==========================================================
+            PCB LOGIC
+        ========================================================== */
+        if (str_contains($name, 'pcb')) {
+
+            $serviceItems = collect($pcbInService[$id] ?? [])
+                ->map(fn($x) => [
+                    'serial' => trim($x->vci_serial_no),
+                    'status' => $x->status
+                ])
+                ->toArray();
+
+            $serviceSerialNumbers = array_map(fn($x) => $x['serial'], $serviceItems);
+
+            $allPurchased = $purchasedSerials[$id] ?? [];
+
+            // available = purchased − assembled − delivered − service
+            $availableList = array_diff(
+                $allPurchased,
+                $assembledSerials,
+                $pcbDelivered,
+                $serviceSerialNumbers   // 🔥 subtract serials in service
+            );
+
+            $availableDetailed = array_map(function ($serial) use ($serviceSerialNumbers) {
+                return [
+                    'serial'      => $serial,
+                    'in_service'  => in_array($serial, $serviceSerialNumbers)
+                ];
+            }, array_values($availableList));
+
+            return [
+                'sparepart_id'       => $id,
+                'sparepart_name'     => $row->sparepart_name,
+                'type'               => 'pcb',
+
+                'purchased_quantity' => count($allPurchased),
+
+                // 🔥 service qty
+                'service_quantity'   => count($serviceSerialNumbers),
+
+                // 🔥 available = purchased − assembled − delivered − service
+                'available_quantity' => count($availableList),
+
+                'service_items'      => $serviceItems,
+                'available_serials'  => $availableDetailed,
+                'purchased_serials'  => $allPurchased,
+            ];
+        }
+
+        /* ==========================================================
+            NON-PCB LOGIC
+        ========================================================== */
+
+        $purchasedQty = (int) $row->purchased_quantity;
+
+        // qty used in assembly
+        $totalUsed = 0;
+        foreach ($productRequirements as $productId => $pr) {
+            $assembledQty = $assembledCounts[$productId] ?? 0;
+
+            $requiredPerProduct = collect($pr->sparepart_requirements)
+                ->firstWhere('id', $id)['required_quantity'] ?? 0;
+
+            $totalUsed += $assembledQty * $requiredPerProduct;
+        }
+
+        // qty in service
+        $serviceQty = $nonPcbReturns[$id] ?? 0;
+
+        // 🔥 AVAILABLE = purchased − used − service
+        $availableQty = max($purchasedQty - $totalUsed - $serviceQty, 0);
+
+        return [
+            'sparepart_id'       => $id,
+            'sparepart_name'     => $row->sparepart_name,
+            'type'               => 'non-pcb',
+
+            'purchased_quantity' => $purchasedQty,
+            'used_quantity'      => $totalUsed,
+
+            'service_quantity'   => $serviceQty,     // 🔥 subtract this
+            'available_quantity' => $availableQty,    // 🔥 updated
+
+        ];
+    })->values();
+
+    return response()->json($final);
+}
+
 
 
 // public function getSeriesSpareparts($series)
@@ -805,21 +1114,16 @@ public function getAllSeriesCounts()
 //     ]);
 // }
 
-
-
 public function getSeriesSpareparts($series)
 {
-    // Decode if frontend sends URL-encoded value like vci%285-series%29
     $series = urldecode($series);
 
-    // Remove the product type in parentheses if present
     if (preg_match('/^(.*)\((.*)\)$/', $series, $matches)) {
-        $series = trim($matches[1]); // Take only the name before parentheses
+        $series = trim($matches[1]);
     }
 
-    // Try to find the product by its name
     $product = Product::where('name', $series)
-        ->whereNull('deleted_at')
+        ->whereNull('deleted_at')             
         ->with('productTypes')
         ->first();
 
@@ -827,7 +1131,6 @@ public function getSeriesSpareparts($series)
         return response()->json(['message' => "Product '{$series}' not found"], 404);
     }
 
-    // Get sparepart requirements JSON (array of {id, required_quantity})
     $sparepartRequirements = $product->sparepart_requirements ?? [];
 
     if (empty($sparepartRequirements)) {
@@ -838,27 +1141,31 @@ public function getSeriesSpareparts($series)
         ]);
     }
 
-    // Fetch spareparts by IDs
     $sparepartIds = collect($sparepartRequirements)->pluck('id')->toArray();
-    $spareparts = Sparepart::whereIn('id', $sparepartIds)->get();
 
-    // Count all assembled VCIs for this product only
+    $spareparts = Sparepart::whereIn('id', $sparepartIds)
+        ->whereNull('deleted_at')              
+        ->get();
+
     $assembledVCIs = DB::table('inventory')
-        ->whereNull('deleted_by')
-        ->whereNull('deleted_at')
         ->where('product_id', $product->id)
+        ->whereNull('deleted_by')               
+        ->whereNull('deleted_at')
         ->count();
 
-    // Map spareparts with quantities
     $sparepartsMapped = $spareparts->map(function ($part) use ($sparepartRequirements, $assembledVCIs) {
+
         $requiredPerProduct = collect($sparepartRequirements)
             ->firstWhere('id', $part->id)['required_quantity'] ?? 0;
 
         $purchasedQty = DB::table('sparepart_purchase_items')
             ->where('sparepart_id', $part->id)
+            ->whereNull('deleted_at')           
+            ->whereNull('deleted_by')         
             ->sum('quantity');
 
         $usedQty = $assembledVCIs * $requiredPerProduct;
+
         $availableQty = max($purchasedQty - $usedQty, 0);
 
         return [
@@ -867,7 +1174,9 @@ public function getSeriesSpareparts($series)
             'name' => $part->name,
             'sparepart_type' => $part->sparepart_type,
             'sparepart_usages' => $part->sparepart_usages,
+
             'required_per_vci' => $requiredPerProduct,
+
             'purchased_quantity' => $purchasedQty,
             'used_quantity' => $usedQty,
             'available_quantity' => $availableQty,
@@ -879,7 +1188,33 @@ public function getSeriesSpareparts($series)
         'spare_parts' => $sparepartsMapped,
     ]);
 }
+public function lastFourPurchases()
+{
+    $purchases = SparepartPurchase::with([
+            'vendor:id,vendor',
+            'items.sparepart:id,name'
+        ])
+        ->whereNull('deleted_at')          
+        ->orderBy('id', 'desc')            
+        ->take(4)                          
+        ->get();
 
+    $response = [];
 
+    foreach ($purchases as $purchase) {
+        foreach ($purchase->items as $item) {
+            $response[] = [
+                'purchase_id'   => $purchase->id,
+                'vendor'        => $purchase->vendor->vendor ?? 'Unknown Vendor',
+                'challan_no'    => $purchase->challan_no,
+                'challan_date'  => $purchase->challan_date,
+                'sparepart'     => $item->sparepart->name ?? null,
+                'quantity'      => $item->quantity,
+            ];
+        }
+    }
+
+    return response()->json($response);
+}
 
 }

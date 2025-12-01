@@ -8,11 +8,11 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 class ContactPerson extends Model
 {
         use SoftDeletes;
-    protected $table = 'vendor_contact_person';
+        protected $table = 'vendor_contact_person';
     
     protected $fillable = [
         'vendor_id', 'name', 'designation', 'mobile_no',
-         'email', 'status','is_main', 
+         'email', 'status','is_main', 'created_by','updated_by','deleted_by'
     ];
 
     protected $casts = [

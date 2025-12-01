@@ -3,13 +3,15 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Sale extends Model
 {
     // use HasFactory;
+        use SoftDeletes;
 
     protected $table = 'sales';
-
+    
     protected $fillable = [
         'customer_id',
         'product_id',
@@ -20,6 +22,10 @@ class Sale extends Model
         'notes', 
         'created_at',
         'updated_at',
+        'deleted_at',
+        'created_by',
+        'updated_by',
+        'deleted_by'
     ];
 
     public function items()

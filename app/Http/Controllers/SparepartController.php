@@ -14,33 +14,54 @@ use Illuminate\Database\QueryException;
 class SparepartController extends Controller
 {
    
-   public function store(Request $request)
+  public function store(Request $request)
 {
     $validated = $request->validate([
         'code' => [
             'nullable',
             'string',
             'max:50',
-            Rule::unique('spareparts', 'code'),
+            function ($attribute, $value, $fail) {
+                if ($value) {
+                    $exists = Sparepart::where('code', $value)
+                        ->whereNull('deleted_at')   // Soft delete check
+                        ->exists();
+
+                    if ($exists) {
+                        $fail("The $attribute has already been taken.");
+                    }
+                }
+            },
         ],
+
         'name' => [
             'required',
             'string',
             'max:255',
             function ($attribute, $value, $fail) {
-                $normalizedName = strtolower(str_replace(' ', '', $value));
-                if (Sparepart::whereRaw("REPLACE(LOWER(name), ' ', '') = ?", [$normalizedName])->exists()) {
-                    $fail('The ' . $attribute . ' has already been taken.');
+                $normalized = strtolower(str_replace(' ', '', $value));
+
+                $exists = Sparepart::whereRaw(
+                    "REPLACE(LOWER(name), ' ', '') = ?", [$normalized]
+                )
+                ->whereNull('deleted_at')   
+                ->exists();
+
+                if ($exists) {
+                    $fail("The $attribute has already been taken.");
                 }
             },
         ],
+
         'sparepart_type' => 'required|string|max:255',
         'sparepart_usages' => 'nullable|string|max:255',
-        'required_per_vci' => 'nullable|integer|min:1', 
+        'required_per_vci' => 'nullable|integer|min:1',
     ]);
 
-    // Set default value if not provided
     $validated['required_per_vci'] = $validated['required_per_vci'] ?? 1;
+
+    // Add created_by
+    $validated['created_by'] = auth()->id();
 
     $sparepart = Sparepart::create($validated);
 
@@ -66,181 +87,213 @@ class SparepartController extends Controller
         ], 200);
     }
 
-   
-    public function update(Request $request, $id)
-    {
-        $sparepart = Sparepart::find($id);
-
-        if (!$sparepart) {
-            return response()->json([
-                'message' => 'Sparepart not found!'
-            ], 404);
-        }
-
-        // Normalize input name for duplicate check
-        $normalizedName = strtolower(str_replace(' ', '', $request->name));
-
-        $exists = Sparepart::whereRaw("REPLACE(LOWER(name), ' ', '') = ?", [$normalizedName])
-            ->where('id', '!=', $id)
-            ->exists();
-
-        if ($exists) {
-            return response()->json([
-                'message' => 'Sparepart with this name already exists!'
-            ], 422);
-        }
-
-        // Validate fields
-      $validated = $request->validate([
-    'code' => [
-        'nullable',
-        'string',
-        'max:50',
-        Rule::unique('spareparts', 'code')->ignore($id),
-    ],
-    'name' => 'required|string|max:255',
-    'sparepart_type' => 'required|string|max:255',
-    'sparepart_usages' => 'nullable|string|max:255',
-    'required_per_vci' => 'nullable|integer|min:1', // NEW
-]);
-
-// Set default if not provided
-$validated['required_per_vci'] = $validated['required_per_vci'] ?? 1;
-
-$sparepart->update($validated);
-
-        return response()->json([
-            'message'   => 'Sparepart updated successfully!',
-            'sparepart' => $sparepart
-        ], 200);
-    }
-
-    /**
-     * Delete a sparepart.
-     */
-    public function destroy($id)
-    {
-        $sparepart = Sparepart::find($id);
-
-        if (!$sparepart) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Sparepart not found!'
-            ], 404);
-        }
-
-        try {
-            $sparepart->delete();
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Sparepart deleted successfully!'
-            ], 200);
-
-        } catch (QueryException $e) {
-            Log::info('Sparepart deletion failed', [
-                'error' => $e->getMessage(),
-                'code' => $e->getCode(),
-                'sparepart_id' => $sparepart->id,
-            ]);
-
-            if ($e->getCode() === '23503') { // foreign key violation
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Cannot delete: This spare part is linked to purchase records.'
-                ], 409);
-            }
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Database error: ' . $e->getMessage()
-            ], 500);
-
-        } catch (\Exception $e) {
-            Log::error("Unexpected error deleting sparepart ID {$id}: {$e->getMessage()}", [
-                'trace' => $e->getTraceAsString()
-            ]);
-
-            return response()->json([
-                'message' => 'Unexpected error occurred while deleting spare part.'
-            ], 500);
-        }
-    }
-
-
-public function index()
+   public function update(Request $request, $id)
 {
-    $spareparts = \App\Models\Sparepart::all();
+    $sparepart = Sparepart::find($id);
 
-    $sparepartsWithAvailableQty = $spareparts->map(function ($part) {
-        // 🔹 1. Total purchased quantity for this spare part
-        $purchasedQty = (int) \DB::table('sparepart_purchase_items')
-            ->where('sparepart_id', $part->id)
-            ->sum('quantity');
+    if (!$sparepart) {
+        return response()->json([
+            'message' => 'Sparepart not found!'
+        ], 404);
+    }
 
-        $usedQty = 0;
+    // Validate fields
+    $validated = $request->validate([
+        'code' => [
+            'nullable',
+            'string',
+            'max:50',
+            function ($attribute, $value, $fail) use ($id) {
+                if ($value) {
+                    $exists = Sparepart::where('code', $value)
+                        ->whereNull('deleted_at')   // Soft delete safe
+                        ->where('id', '!=', $id)
+                        ->exists();
 
-        // 🔹 2. Check if the sparepart has defined usages (JSON array)
-        $usages = json_decode($part->sparepart_usages, true);
-
-        if (is_array($usages) && !empty($usages)) {
-            foreach ($usages as $usage) {
-                $productId = $usage['product_id'] ?? null;
-                $requiredPerProduct = (int) ($usage['required_quantity'] ?? $part->required_per_vci ?? 1);
-
-                if ($productId) {
-                    // Count assembled VCIs for this product
-                    $assembledVCIs = \DB::table('inventory')
-                        ->whereNull('deleted_by')
-                        ->whereNull('deleted_at')
-                        ->where('product_id', $productId)
-                        ->count();
-
-                    // Add to used quantity
-                    $usedQty += $assembledVCIs * $requiredPerProduct;
+                    if ($exists) {
+                        $fail("The $attribute has already been taken.");
+                    }
                 }
-            }
-        } else {
-            // 🔹 3. If no specific usage, fallback to required_per_vci * all assembled VCIs
-            $assembledVCIs = \DB::table('inventory')
-                ->whereNull('deleted_by')
-                ->whereNull('deleted_at')
-                ->count();
+            },
+        ],
 
-            $requiredPerVCI = (int) ($part->required_per_vci ?? 1);
-            $usedQty = $assembledVCIs * $requiredPerVCI;
-        }
+        'name' => [
+            'required',
+            'string',
+            'max:255',
+            function ($attribute, $value, $fail) use ($id) {
+                $normalized = strtolower(str_replace(' ', '', $value));
 
-        // 🔹 4. Calculate available quantity correctly
-        $availableQty = $purchasedQty - $usedQty;
-        if ($availableQty < 0) {
-            $availableQty = 0;
-        }
+                $exists = Sparepart::whereRaw(
+                    "REPLACE(LOWER(name), ' ', '') = ?", [$normalized]
+                )
+                ->whereNull('deleted_at')       // Soft delete safe
+                ->where('id', '!=', $id)
+                ->exists();
 
-        // 🔹 5. Return consistent structure
-        return [
-            'id' => $part->id,
-            'code' => $part->code,
-            'name' => $part->name,
-            'sparepart_type' => $part->sparepart_type,
-            'sparepart_usages' => $part->sparepart_usages,
-            'required_per_vci' => (int) ($part->required_per_vci ?? 1),
-            'purchased_quantity' => $purchasedQty,
-            'used_quantity' => $usedQty,
-            'available_quantity' => $availableQty,
-            'created_at' => $part->created_at,
-            'updated_at' => $part->updated_at,
-        ];
-    });
+                if ($exists) {
+                    $fail("The $attribute has already been taken.");
+                }
+            },
+        ],
 
-    // 🔹 6. Return JSON response
+        'sparepart_type' => 'required|string|max:255',
+        'sparepart_usages' => 'nullable|string|max:255',
+        'required_per_vci' => 'nullable|integer|min:1',
+    ]);
+
+    $validated['required_per_vci'] = $validated['required_per_vci'] ?? 1;
+
+    $validated['updated_by'] = auth()->id();
+    $sparepart->update($validated);
+
     return response()->json([
-        'spareparts' => $sparepartsWithAvailableQty->values(),
+        'message'   => 'Sparepart updated successfully!',
+        'sparepart' => $sparepart
     ], 200);
 }
 
 
 
+   public function destroy($id)
+{
+    $sparepart = Sparepart::find($id);
+
+    if (!$sparepart) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Sparepart not found!'
+        ], 404);
+    }
+
+    try {
+        $sparepart->deleted_by = auth()->id();
+        $sparepart->save();
+
+        // Perform soft delete
+        $sparepart->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Sparepart deleted successfully!'
+        ], 200);
+
+    } catch (QueryException $e) {
+
+        Log::info('Sparepart deletion failed', [
+            'error' => $e->getMessage(),
+            'code' => $e->getCode(),
+            'sparepart_id' => $sparepart->id,
+        ]);
+
+        if ($e->getCode() === '23503') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Cannot delete: This spare part is linked to purchase records.'
+            ], 409);
+        }
+
+        return response()->json([
+            'success' => false,
+            'message' => 'Database error: ' . $e->getMessage()
+        ], 500);
+
+    } catch (\Exception $e) {
+
+        Log::error("Unexpected error deleting sparepart ID {$id}: {$e->getMessage()}", [
+            'trace' => $e->getTraceAsString()
+        ]);
+
+        return response()->json([
+            'success' => false,
+            'message' => 'Unexpected error occurred while deleting spare part.'
+        ], 500);
+    }
+}
+
+
+
+public function index()
+{
+    // Fetch only active (non-deleted) spareparts
+    $spareparts = \App\Models\Sparepart::whereNull('deleted_at')->get();
+
+    $sparepartsWithAvailableQty = $spareparts->map(function ($part) {
+
+        $purchasedQty = (int) \DB::table('sparepart_purchase_items')
+            ->where('sparepart_id', $part->id)
+            ->whereNull('deleted_at')     // soft delete safe
+            ->whereNull('deleted_by')     // soft delete safe
+            ->sum('quantity');
+
+
+        $usedQty = 0;
+
+        $usages = json_decode($part->sparepart_usages, true);
+
+        if (is_array($usages) && !empty($usages)) {
+
+            // Sparepart has multiple usage rules
+            foreach ($usages as $usage) {
+
+                $productId = $usage['product_id'] ?? null;
+                $requiredPerProduct = (int) ($usage['required_quantity'] ?? $part->required_per_vci ?? 1);
+
+                if ($productId) {
+
+                    // Count assembled VCIs for this product only
+                    $assembledVCIs = \DB::table('inventory')
+                        ->where('product_id', $productId)
+                        ->whereNull('deleted_by')
+                        ->whereNull('deleted_at')
+                        ->count();
+
+                    // Add used quantity
+                    $usedQty += $assembledVCIs * $requiredPerProduct;
+                }
+            }
+
+        } else {
+
+            $assembledVCIs = \DB::table('inventory')
+                ->whereNull('deleted_by')
+                ->whereNull('deleted_at')
+                ->count();
+
+            $requiredPerVci = (int) ($part->required_per_vci ?? 1);
+
+            $usedQty = $assembledVCIs * $requiredPerVci;
+        }
+
+
+        $availableQty = $purchasedQty - $usedQty;
+        if ($availableQty < 0) {
+            $availableQty = 0;
+        }
+
+
+        return [
+            'id' => $part->id,
+            'code' => $part->code,
+            'name' => $part->name,
+
+            'sparepart_type' => $part->sparepart_type,
+            'sparepart_usages' => $part->sparepart_usages,
+            'required_per_vci' => (int) ($part->required_per_vci ?? 1),
+
+            'purchased_quantity' => $purchasedQty,
+            'used_quantity' => $usedQty,
+            'available_quantity' => $availableQty,
+
+            'created_at' => $part->created_at,
+            'updated_at' => $part->updated_at,
+        ];
+    });
+
+    return response()->json([
+        'spareparts' => $sparepartsWithAvailableQty->values()
+    ], 200);
+}
 
     public function deleteItem($purchase_id, $sparepart_id)
     {

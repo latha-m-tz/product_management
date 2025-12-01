@@ -9,10 +9,8 @@ class Product extends Model
 {
     use SoftDeletes;
 
-    // ✅ Table name
     protected $table = 'product';
 
-    // ✅ Fillable columns
     protected $fillable = [
         'name',
         'requirement_per_product',
@@ -24,12 +22,10 @@ class Product extends Model
         'deleted_by',
     ];
 
-    // ✅ Automatically cast JSON column to array/object in Laravel
     protected $casts = [
         'sparepart_requirements' => 'array',
     ];
 
-    // ✅ Relationships
     public function productTypes()
     {
         return $this->hasMany(ProductType::class, 'product_id');
