@@ -13,13 +13,15 @@ use Illuminate\Validation\Rule;
 
 class VendorController extends Controller
 {
-
- public function Vendorstore(Request $request)
+public function Vendorstore(Request $request)
 {
     $validator = Validator::make($request->all(), [
 
+        // Vendor name unique
         'vendor' => [
-            'required', 'string', 'max:255',
+            'required', 
+            'string', 
+            'max:255', 
             function ($attribute, $value, $fail) {
                 $exists = Vendor::where('vendor', $value)
                     ->whereNull('deleted_at')
@@ -32,27 +34,34 @@ class VendorController extends Controller
 
         // GST optional
         'gst_no' => [
-            'nullable', 'string', 'max:15',
-            Rule::unique('vendors', 'gst_no')->whereNull('deleted_at')
+            'nullable', 
+            'string', 
+            'max:15',
+            Rule::unique('vendors', 'gst_no')->whereNull('deleted_at'),
         ],
 
-        // Email optional
         'email' => [
-            'nullable', 'email', 'max:255',
-            Rule::unique('vendors', 'email')->whereNull('deleted_at')
+            'nullable', 
+            'email', 
+            'max:255',
+            Rule::unique('vendors', 'email')->whereNull('deleted_at'),
         ],
 
-        // Location fields NOT required
+        // Location fields optional
         'pincode'  => 'nullable|digits:6',
         'city'     => 'nullable|string|max:100',
         'state'    => 'nullable|string|max:100',
         'district' => 'nullable|string|max:100',
         'address'  => 'nullable|string',
 
-        // Vendor mobile NOT required
+        // Vendor mobile optional
         'mobile_no' => [
-            'nullable', 'string', 'max:15',
-            Rule::unique('vendors', 'mobile_no')->whereNull('deleted_at')
+            'nullable', 
+            'string', 
+            'max:15',
+            Rule::unique('vendors', 'mobile_no')
+                ->whereNull('deleted_at')
+                ->ignore($request->id),
         ],
 
         // Contact Person
@@ -60,16 +69,51 @@ class VendorController extends Controller
         'contact_persons.*.name'        => 'required_with:contact_persons|string|max:255',
         'contact_persons.*.designation' => 'nullable|string|max:100',
 
-        // Contact mobile NOT required
-        'contact_persons.*.mobile_no'   => [
-            'nullable', 'string', 'max:15',
-            Rule::unique('vendor_contact_person', 'mobile_no')->whereNull('deleted_at')
-        ],
+'contact_persons.*.mobile_no' => [
+    'nullable',
+    'string',
+    'max:15',
+    function ($attribute, $value, $fail) use ($request) {
 
-        // Email optional
-        'contact_persons.*.email'       => [
-            'nullable', 'email', 'max:255',
-            Rule::unique('vendor_contact_person', 'email')->whereNull('deleted_at')
+        preg_match('/contact_persons\.(\d+)\.mobile_no/', $attribute, $match);
+        $index = $match[1] ?? null;
+
+        $contacts = $request->contact_persons ?? [];
+
+        /**
+         * 1️⃣ CHECK DUPLICATE INSIDE SAME VENDOR CONTACT LIST
+         */
+        foreach ($contacts as $i => $contact) {
+            if ($i != $index && ($contact['mobile_no'] ?? null) === $value) {
+                return $fail("This mobile number is already used by another contact person in this vendor.");
+            }
+        }
+
+        /**
+         * 2️⃣ CHECK IF SAME AS VENDOR MAIN MOBILE
+         */
+        if (!empty($request->mobile_no) && $request->mobile_no === $value) {
+            return $fail("Contact mobile number cannot be the same as the vendor's company mobile number.");
+        }
+
+        /**
+         * ❌ REMOVED: DO NOT CHECK OTHER VENDORS' MAIN MOBILE
+         */
+
+        /**
+         * ❌ REMOVED: DO NOT CHECK OTHER VENDORS' CONTACT PERSON MOBILE
+         */
+    }
+],
+
+
+
+        'contact_persons.*.email' => [
+            'nullable', 
+            'email', 
+            'max:255',
+            Rule::unique('vendor_contact_person', 'email')
+                ->whereNull('deleted_at'),
         ],
     ]);
 
@@ -82,6 +126,8 @@ class VendorController extends Controller
     DB::beginTransaction();
 
     try {
+
+        // Insert Vendor
         $vendorId = DB::table('vendors')->insertGetId([
             'vendor'      => $request->vendor,
             'gst_no'      => $request->gst_no,
@@ -98,7 +144,7 @@ class VendorController extends Controller
             'created_by'  => auth()->id(),
         ]);
 
-        // Save Contacts
+        // Insert Contact Persons
         if (!empty($request->contact_persons)) {
             foreach ($request->contact_persons as $contact) {
                 DB::table('vendor_contact_person')->insert([
@@ -129,8 +175,6 @@ class VendorController extends Controller
         return response()->json(['error' => $e->getMessage()], 500);
     }
 }
-
-
 
 
     public function VendorEdit($id)
@@ -203,14 +247,14 @@ public function VendorUpdate(Request $request, $id)
         'contact_persons'               => 'nullable|array',
         'contact_persons.*.name'        => 'required_with:contact_persons|string|max:255',
         'contact_persons.*.designation' => 'nullable|string|max:100',
-
-        'contact_persons.*.mobile_no' => [
+'contact_persons.*.mobile_no' => [
             'nullable', 'max:15',
             Rule::unique('vendor_contact_person', 'mobile_no')
                 ->whereNull('deleted_at'),
         ],
 
-        // email OPTIONAL
+
+
         'contact_persons.*.email' => [
             'nullable', 'email', 'max:255',
             Rule::unique('vendor_contact_person', 'email')
@@ -264,7 +308,6 @@ public function VendorUpdate(Request $request, $id)
             'updated_by' => auth()->id(),
         ]);
 
-        // DELETE OLD CONTACTS
         DB::table('vendor_contact_person')->where('vendor_id', $id)->delete();
 
         if (is_array($contacts)) {

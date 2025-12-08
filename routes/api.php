@@ -146,10 +146,10 @@ Route::delete('/purchase-items/{purchase_id}/{sparepart_id}', [SparepartControll
 Route::get('/sales/serials/{productId}', [SalesController::class, 'getSaleSerials'])->middleware('jwt.auth');
 Route::get('/products/{productId}/serials', [SalesController::class, 'getProductSerials'])->middleware('jwt.auth');
 Route::apiResource('technicians', TechnicianController::class)->middleware('jwt.auth');
-Route::get('/products/sold/count', [SalesController::class, 'getTotalProductSalesCount'])->middleware('jwt.auth');
+Route::get('/products/sold/count', [SalesController::class, 'getSalesSummary'])->middleware('jwt.auth');
 Route::get('/get-purchase',[SparepartPurchaseController::class,'lastFourPurchases'])->middleware('jwt.auth');
 
-
+Route::get('/overallsale',[SalesController::class,'getSalesWithTotals'])->middleware('jwt.auth');
 
 Route::get('/getProductStock/{id}', [ProductController::class, 'getProductStock'])->middleware('jwt.auth');
 Route::get('/products/stock/all', [ProductController::class, 'getAllProductStocks']);
