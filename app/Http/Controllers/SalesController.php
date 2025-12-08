@@ -426,22 +426,98 @@ public function getSaleSerials($productId)
         'data'    => $formatted
     ]);
 }
-public function getTotalProductSalesCount()
+public function getSalesSummary()
 {
-    $count = SaleItem::whereNull('deleted_at')
+    $totalSold = SaleItem::whereNull('deleted_at')
         ->whereIn('sale_id', function ($q) {
-            $q->select('id')
-              ->from('sales')
-              ->whereNull('deleted_at');
+            $q->select('id')->from('sales')->whereNull('deleted_at');
         })
         ->count();
 
+    $yearly = SaleItem::selectRaw("
+            EXTRACT(YEAR FROM sale_items.created_at) AS year,
+            COUNT(*) AS total_quantity
+        ")
+        ->join('sales', 'sales.id', '=', 'sale_items.sale_id')
+        ->whereNull('sale_items.deleted_at')
+        ->whereNull('sales.deleted_at')
+        ->groupByRaw("EXTRACT(YEAR FROM sale_items.created_at)")
+        ->orderByRaw("EXTRACT(YEAR FROM sale_items.created_at)")
+        ->get();
+
+    $monthly = SaleItem::selectRaw("
+            TO_CHAR(sale_items.created_at, 'Month') AS month_name,
+            EXTRACT(MONTH FROM sale_items.created_at) AS month_number,
+            EXTRACT(YEAR FROM sale_items.created_at) AS year,
+            COUNT(*) AS total_quantity
+        ")
+        ->join('sales', 'sales.id', '=', 'sale_items.sale_id')
+        ->whereNull('sale_items.deleted_at')
+        ->whereNull('sales.deleted_at')
+        ->groupByRaw("
+            month_name,
+            month_number,
+            EXTRACT(YEAR FROM sale_items.created_at)
+        ")
+        ->orderByRaw("year ASC, month_number ASC")
+        ->get();
+
     return response()->json([
-        'success' => true,
-        'message' => 'Total product sales count fetched successfully',
-        'count' => $count,
+        'success'              => true,
+        'total_products_sold'  => $totalSold,
+        'yearly_sales'         => $yearly,
+        'monthly_sales'        => $monthly,
     ]);
 }
 
+
+public function getSalesWithTotals()
+{
+    $sales = Sale::with([
+        'customer:id,customer',
+        'items:id,sale_id,product_id,quantity,serial_no',
+        'items.product:id,name'
+    ])
+    ->whereNull('deleted_at')
+    ->orderBy('id', 'desc')
+    ->get();
+
+    $formatted = $sales->map(function ($sale) {
+
+        // Group products inside the sale
+        $grouped = [];
+
+        foreach ($sale->items as $item) {
+            $pid = $item->product_id;
+
+            if (!isset($grouped[$pid])) {
+                $grouped[$pid] = [
+                    'product_id'   => $pid,
+                    'product_name' => $item->product->name ?? 'Unknown Product',
+                    'quantity'     => 0,
+                ];
+            }
+
+            $grouped[$pid]['quantity'] += $item->quantity;
+        }
+
+        // Total quantity of the sale (sum of all product quantities)
+        $totalQty = array_sum(array_column($grouped, 'quantity'));
+
+        return [
+            'sale_id'       => $sale->id,
+            'customer'      => $sale->customer->customer ?? 'N/A',
+            'challan_no'    => $sale->challan_no,
+            'shipment_date' => $sale->shipment_date,
+            'total_quantity'=> $totalQty,
+            'products'      => array_values($grouped),
+        ];
+    });
+
+    return response()->json([
+        'success' => true,
+        'data'    => $formatted
+    ]);
+}
 
 }
