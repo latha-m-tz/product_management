@@ -122,8 +122,6 @@ Route::delete('/inventory/delete/{serial_no}', [InventoryController::class, 'del
 
 Route::get('/sales/product-status/{productId}', [SalesController::class, 'getSoldAndNotSoldSerials'])->middleware('jwt.auth');
 Route::get('/sales/product-summary', [SalesController::class, 'getProductSaleSummary'])->middleware('jwt.auth');
-
-
 Route::get('/sales', [SalesController::class, 'index'])->middleware('jwt.auth');        
 Route::post('/sales', [SalesController::class, 'store'])->middleware('jwt.auth');      
 Route::get('/sales/{id}', [SalesController::class, 'show'])->middleware('jwt.auth');    

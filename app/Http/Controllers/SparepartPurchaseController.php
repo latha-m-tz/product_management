@@ -39,8 +39,8 @@ public function store(Request $request)
         ],
 
         'tracking_number' => 'nullable|string|max:100',
-        'challan_date' => ['required', 'before_or_equal:today'],
-        'received_date' => ['required', 'before_or_equal:today'],
+        'challan_date'  => ['required', 'date'],
+        'received_date' => ['required', 'date', 'after_or_equal:challan_date'],
         'courier_name' => 'nullable|string|max:100',
 
         'items' => 'required|array|min:1',
@@ -342,7 +342,7 @@ public function update(Request $request, $id)
                 $exists = DB::table('sparepart_purchase')
                     ->where('challan_no', $value)
                     ->where('id', '!=', $id)
-                    ->whereNull('deleted_at')  // 👈 ignore soft deleted
+                    ->whereNull('deleted_at')  
                     ->exists();
 
                 if ($exists) {
@@ -352,8 +352,8 @@ public function update(Request $request, $id)
         ],
 
         'tracking_number' => 'nullable|string|max:100',
-        'challan_date' => ['required', 'date_format:Y-m-d', 'before_or_equal:today'],
-'received_date' => ['required', 'date', 'before_or_equal:today'],   
+'challan_date'  => ['required', 'date', 'before_or_equal:today'],
+'received_date' => ['required', 'date', 'after_or_equal:challan_date'],
         'courier_name' => 'nullable|string|max:100',
 
         'items' => 'nullable|array|min:1',
@@ -734,7 +734,6 @@ public function deleteItem($purchaseId, $itemId)
         ], 404);
     }
 
-    // ✅ Store deleted_by before soft delete
     $item->deleted_by = auth()->id();
     $item->save();
 

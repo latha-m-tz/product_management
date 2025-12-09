@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 class ServiceVCIManagementController extends Controller
+
 {
    
 public function index()
@@ -520,6 +521,47 @@ public function update(Request $request, $id)
     }
 
     return response()->json($service, 200);
+}
+ public function show($id)
+{
+    $service = VCIService::with(['vendor', 'items.sparepart'])
+        ->whereNull('deleted_at')
+        ->find($id);
+
+    if (!$service) {
+        return response()->json(['message' => 'Service VCI not found'], 404);
+    }
+
+    $vendorName = $service->vendor ? $service->vendor->vendor : null;
+
+    $receiptFiles = [];
+    if (is_array($service->receipt_files)) {
+        foreach ($service->receipt_files as $file) {
+            $receiptFiles[] = asset('storage/' . $file);
+        }
+    }
+
+    // Fix upload_image path
+    foreach ($service->items as $item) {
+        $item->upload_image = $item->upload_image
+            ? asset('storage/' . ltrim($item->upload_image, '/'))
+            : null;
+    }
+
+    return response()->json([
+        'id'                => $service->id,
+        'vendor_id'         => $service->vendor_id,
+        'vendor_name'       => $vendorName,
+        'challan_no'        => $service->challan_no,
+        'challan_date'      => $service->challan_date,
+        'tracking_no'       => $service->tracking_no,
+        'status'            => $service->status,
+        'receipt_files'     => $service->receipt_files,
+        'receipt_files_urls'=> $receiptFiles,
+        'items'             => $service->items,
+        'created_at'        => $service->created_at,
+        'updated_at'        => $service->updated_at,
+    ], 200);
 }
 
 
