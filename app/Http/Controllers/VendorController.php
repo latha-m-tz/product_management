@@ -204,6 +204,7 @@ public function VendorUpdate(Request $request, $id)
 {
     $validator = Validator::make($request->all(), [
 
+        // UNIQUE VENDOR NAME (excluding soft deleted)
         'vendor' => [
             'required', 'string', 'max:255',
             function ($attribute, $value, $fail) use ($id) {
@@ -217,6 +218,7 @@ public function VendorUpdate(Request $request, $id)
             },
         ],
 
+        // GST UNIQUE PER VENDOR (ignore same vendor)
         'gst_no' => [
             'nullable', 'string', 'max:50',
             Rule::unique('vendors', 'gst_no')
@@ -238,39 +240,68 @@ public function VendorUpdate(Request $request, $id)
         'address'   => 'nullable|string',
 
         'mobile_no' => [
-            'nullable', 'max:15',
+            'nullable',
+            'max:15',
             Rule::unique('vendors', 'mobile_no')
                 ->ignore($id)
                 ->whereNull('deleted_at'),
         ],
 
+        // CONTACT PERSON VALIDATION
         'contact_persons'               => 'nullable|array',
         'contact_persons.*.name'        => 'required_with:contact_persons|string|max:255',
         'contact_persons.*.designation' => 'nullable|string|max:100',
-'contact_persons.*.mobile_no' => [
-            'nullable', 'max:15',
+
+        // Contact person mobile — UNIQUE ONLY FOR SAME VENDOR
+        'contact_persons.*.mobile_no' => [
+            'nullable',
+            'max:15',
             Rule::unique('vendor_contact_person', 'mobile_no')
+                ->where('vendor_id', $id) // only check duplicates inside same vendor
                 ->whereNull('deleted_at'),
         ],
 
-
-
+        // Contact person email — UNIQUE ONLY FOR SAME VENDOR
         'contact_persons.*.email' => [
             'nullable', 'email', 'max:255',
             Rule::unique('vendor_contact_person', 'email')
+                ->where('vendor_id', $id)
                 ->whereNull('deleted_at'),
         ],
+
     ]);
 
     if ($validator->fails()) {
         return response()->json(['errors' => $validator->errors()], 422);
     }
 
+    // EXTRA MANUAL VALIDATION
     $extraErrors = [];
-
     $contacts = $request->contact_persons ?? [];
 
+    // Prevent duplicate mobile numbers inside same vendor (same request)
+    $mobiles = [];
+    $emails = [];
+
     foreach ($contacts as $index => $cp) {
+
+        // Prevent duplicate mobile inside same vendor
+        if (!empty($cp['mobile_no'])) {
+            if (in_array($cp['mobile_no'], $mobiles)) {
+                $extraErrors["contact_persons.$index.mobile_no"][] = 
+                    "Duplicate mobile number for this vendor's contact persons.";
+            }
+            $mobiles[] = $cp['mobile_no'];
+        }
+
+        // Prevent duplicate email inside same vendor
+        if (!empty($cp['email'])) {
+            if (in_array($cp['email'], $emails)) {
+                $extraErrors["contact_persons.$index.email"][] = 
+                    "Duplicate email for this vendor's contact persons.";
+            }
+            $emails[] = $cp['email'];
+        }
 
         // Vendor mobile == contact mobile
         if (!empty($request->mobile_no) && !empty($cp['mobile_no']) &&
@@ -279,6 +310,7 @@ public function VendorUpdate(Request $request, $id)
                 "Contact person's mobile cannot be the same as vendor mobile.";
         }
 
+        // Vendor email == contact email
         if (!empty($request->email) && !empty($cp['email']) &&
             strtolower($request->email) === strtolower($cp['email'])) {
             $extraErrors["contact_persons.$index.email"][] =
@@ -286,6 +318,7 @@ public function VendorUpdate(Request $request, $id)
         }
     }
 
+    // If extra validation errors found
     if (!empty($extraErrors)) {
         return response()->json(['errors' => $extraErrors], 422);
     }
@@ -308,24 +341,24 @@ public function VendorUpdate(Request $request, $id)
             'updated_by' => auth()->id(),
         ]);
 
+        // DELETE OLD CONTACT PERSONS
         DB::table('vendor_contact_person')->where('vendor_id', $id)->delete();
 
-        if (is_array($contacts)) {
-            foreach ($contacts as $cp) {
-                DB::table('vendor_contact_person')->insert([
-                    'vendor_id'   => $id,
-                    'name'        => $cp['name'] ?? null,
-                    'designation' => $cp['designation'] ?? null,
-                    'mobile_no'   => $cp['mobile_no'] ?? null,
-                    'email'       => $cp['email'] ?? null,
-                    'status'      => $cp['status'] ?? 'Active',
-                    'is_main'     => !empty($cp['is_main']) ? 1 : 0,
-                    'created_at'  => now(),
-                    'updated_at'  => now(),
-                    'created_by'  => auth()->id(),
-                    'updated_by'  => auth()->id(),
-                ]);
-            }
+        // INSERT NEW CONTACT PERSONS
+        foreach ($contacts as $cp) {
+            DB::table('vendor_contact_person')->insert([
+                'vendor_id'   => $id,
+                'name'        => $cp['name'] ?? null,
+                'designation' => $cp['designation'] ?? null,
+                'mobile_no'   => $cp['mobile_no'] ?? null,
+                'email'       => $cp['email'] ?? null,
+                'status'      => $cp['status'] ?? 'Active',
+                'is_main'     => !empty($cp['is_main']) ? 1 : 0,
+                'created_at'  => now(),
+                'updated_at'  => now(),
+                'created_by'  => auth()->id(),
+                'updated_by'  => auth()->id(),
+            ]);
         }
 
         DB::commit();
@@ -337,6 +370,7 @@ public function VendorUpdate(Request $request, $id)
         return response()->json(['error' => $e->getMessage()], 500);
     }
 }
+
 
     public function VendorList()
     {
