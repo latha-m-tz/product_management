@@ -5,7 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\Sale;
 use App\Models\SaleItem;
-use App\Models\Inventory;
+use App\Models\Inventory;   
 use App\Models\Customer;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
@@ -487,6 +487,39 @@ public function getTotalProductSalesCount()
         'count' => $count,
     ]);
 }
+public function getSalesWithTotals()
+{
+    $sales = Sale::with([
+        'customer:id,customer',
+        'items:id,sale_id,product_id,quantity',
+        'items.product:id,name'
+    ])
+    ->whereNull('deleted_at')
+    ->orderBy('id', 'desc')
+    ->limit(20)
+    ->get();
+
+    $formatted = $sales->map(function ($sale) {
+        return [
+            'sale_id'       => $sale->id,
+            'customer'      => $sale->customer->customer ?? 'N/A',
+            'shipment_date' => $sale->shipment_date,
+            'products'      => $sale->items->map(function ($item) {
+                return [
+                    'product_name' => $item->product->name ?? 'N/A',
+                    'quantity'     => $item->quantity,
+                ];
+            }),
+        ];
+    });
+
+    return response()->json([
+        'success' => true,
+        'message' => 'Last sales list fetched successfully',
+        'data'    => $formatted
+    ]);
+}
+
 
 // public function getSalesGraph()
 // {
