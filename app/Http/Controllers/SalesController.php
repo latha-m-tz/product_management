@@ -274,60 +274,81 @@ class SalesController extends Controller
 
         return response()->json(['message' => 'Sale soft deleted successfully']);
     }
-    public function getSoldAndNotSoldSerials($productId)
+public function getSoldAndNotSoldSerials($productId)
 {
+    // Fetch all assembled serials (keep as objects)
     $assembled = Inventory::where('product_id', $productId)
         ->whereNull('deleted_at')
-        ->pluck('serial_no')
-        ->map('trim')
-        ->toArray();
+        ->get();
 
-    if (empty($assembled)) {
+    if ($assembled->isEmpty()) {
         return response()->json([
             'message' => 'No assembled serials found for this product.',
             'sold' => [],
             'not_sold' => []
         ]);
     }
+
+    // Normalize serials
+    $assembledSerials = $assembled->pluck('serial_no')
+        ->map(fn($s) => strtolower(trim($s)))
+        ->toArray();
+
+    // Fetch sold serials
     $soldSerials = SaleItem::where('product_id', $productId)
         ->whereNull('deleted_at')
         ->pluck('serial_no')
-        ->map('trim')
+        ->map(fn($s) => strtolower(trim($s)))
         ->toArray();
 
-    $notSoldSerials = array_diff($assembled, $soldSerials);
+    // Sold items with tested status
+    $soldRows = SaleItem::where('product_id', $productId)
+        ->whereIn('serial_no', $soldSerials)
+        ->with([
+            'sale:id,challan_no,challan_date,customer_id',
+            'sale.customer:id,customer,email,mobile_no'
+        ])
+        ->select('id','serial_no','sale_id','product_id')
+        ->orderBy('serial_no')
+        ->get()
+        ->map(function($saleItem) use ($assembled) {
+            $inv = $assembled->firstWhere('serial_no', strtolower(trim($saleItem->serial_no)));
+            return [
+                'id' => $saleItem->id,
+                'serial_no' => $saleItem->serial_no,
+                'sale_id' => $saleItem->sale_id,
+                'product_id' => $saleItem->product_id,
+                'tested_status' => $inv->tested_status ?? 'Fail',
+                'tested_by' => $inv->tested_by ?? null,
+                'tested_date' => $inv->tested_date ?? null,
+            ];
+        });
 
-    // Sort for clean response
-    sort($soldSerials);
-    sort($notSoldSerials);
+    // Unsold serials with tested status
+    $notSoldSerials = array_diff($assembledSerials, $soldSerials);
+
+    $unsoldRows = collect($notSoldSerials)->map(function($serial) use ($assembled) {
+        $inv = $assembled->firstWhere('serial_no', strtolower(trim($serial)));
+        return [
+            'id' => $inv->id,
+            'serial_no' => $inv->serial_no,
+            'tested_status' => $inv->tested_status ?? 'Fail',
+            'tested_by' => $inv->tested_by ?? null,
+            'tested_date' => $inv->tested_date ?? null,
+        ];
+    })->values();
 
     return response()->json([
         'product_id' => $productId,
         'sold_count' => count($soldSerials),
         'unsold_count' => count($notSoldSerials),
-
-        // 🔥 SOLD serial list with challan, sale info, etc.
-        'sold' => SaleItem::where('product_id', $productId)
-            ->whereIn('serial_no', $soldSerials)
-            ->with([
-                'sale:id,challan_no,challan_date,customer_id',
-                'sale.customer:id,customer,email,mobile_no'
-            ])
-            ->select('id','serial_no','sale_id','product_id')
-            ->orderBy('serial_no')
-            ->get(),
-
-        // 🔥 UNSOLD serial list from inventory
-        'not_sold' => Inventory::where('product_id', $productId)
-            ->whereNull('deleted_at')
-            ->whereIn('serial_no', $notSoldSerials)
-            ->select('id','serial_no','tested_status','tested_by','tested_date')
-            ->orderBy('serial_no')
-            ->get(),
-
+        'sold' => $soldRows,
+        'not_sold' => $unsoldRows,
         'message' => 'Sold and unsold serials fetched successfully.'
     ]);
 }
+
+
 public function getProductSaleSummary()
 {
     // Fetch all products

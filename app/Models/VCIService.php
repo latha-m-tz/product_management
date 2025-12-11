@@ -25,9 +25,20 @@ protected $fillable = [
     'deleted_by',
 ];
 
-protected $casts = [
-    'receipt_files' => 'array',
-];
+    protected $casts = [
+        'receipt_files' => 'array',
+    ];
+
+    protected $appends = ['receipt_files_urls'];
+
+    public function getReceiptFilesUrlsAttribute()
+    {
+        $urls = [];
+        foreach ($this->receipt_files ?? [] as $file) {
+            $urls[] = asset('storage/' . $file);
+        }
+        return $urls;
+    }
 
 public function serviceVCI()
 {
