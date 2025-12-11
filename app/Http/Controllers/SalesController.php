@@ -361,7 +361,6 @@ public function getProductSaleSummary()
 
     return response()->json($summary);
 }
-
 public function getSaleSerials($productId)
 {
     $serials = \DB::table('sale_items')
