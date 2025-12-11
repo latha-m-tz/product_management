@@ -291,21 +291,15 @@ public function VendorUpdate(Request $request, $id)
             'max:15',
         ],
 
-        'contact_persons.*.email' => [
-            'nullable', 'email', 'max:255',
-            Rule::unique('vendor_contact_person', 'email')
-                ->where('vendor_id', $id)
-                ->whereNull('deleted_at'),
-        ],
+       'contact_persons.*.email' => [
+    'nullable', 'email', 'max:255',
+],
     ]);
 
     if ($validator->fails()) {
         return response()->json(['errors' => $validator->errors()], 422);
     }
 
-    /* -------------------------------------------------------
-     * 5. Manual validation for SAME VENDOR only
-     * ------------------------------------------------------- */
     $extraErrors = [];
     $contacts = $request->contact_persons ?? [];
     $mobiles = [];
