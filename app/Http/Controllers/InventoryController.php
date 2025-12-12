@@ -414,10 +414,10 @@ public function getAllActiveSerials(Request $request)
 public function deleteSerial($serial_no)
 {
     try {
-        \Log::info("🗑️ Deleting serial number: {$serial_no}");
+        \Log::info("🗑️ Delete request for serial: {$serial_no}");
 
-        // Find by serial number
-        $inventory = \App\Models\Inventory::where('serial_no', $serial_no)
+        // Find serial
+        $inventory = Inventory::where('serial_no', $serial_no)
             ->whereNull('deleted_at')
             ->first();
 
@@ -428,8 +428,20 @@ public function deleteSerial($serial_no)
             ], 404);
         }
 
-        // Soft delete
-        $inventory->deleted_by = auth()->id() ?? null;
+        $inventoryId = $inventory->id;
+
+        $usedInSales = SaleItem::where('serial_no', $serial_no)
+            ->whereNull('deleted_at')
+            ->exists();
+
+        if ($usedInSales) {
+            return response()->json([
+                'message' => "❌ Serial {$serial_no} cannot be deleted. It is already used in a Sale.",
+                'status'  => false,
+            ], 403);
+        }
+
+               $inventory->deleted_by = auth()->id() ?? null;
         $inventory->deleted_at = now();
         $inventory->save();
 
@@ -437,14 +449,17 @@ public function deleteSerial($serial_no)
             'message' => "Serial number {$serial_no} deleted successfully.",
             'status'  => true,
         ], 200);
+
     } catch (\Exception $e) {
         \Log::error("❌ Inventory delete error: " . $e->getMessage());
+
         return response()->json([
             'message' => 'Failed to delete serial number.',
             'error'   => $e->getMessage(),
         ], 500);
     }
 }
+
 
     public function destroy($id)
     {
@@ -912,20 +927,31 @@ public function checkSerialsPurchased(Request $request)
     $productId = $request->product_id;
     $assembleCount = count($serials);
 
-
+    // ------------------------------------------------------
+    // 1. Purchased serial check
+    // ------------------------------------------------------
     $purchasedSerials = SparepartPurchaseItem::whereIn('serial_no', $serials)
         ->pluck('serial_no')
         ->map(fn($s) => trim($s))
         ->toArray();
 
+    // ------------------------------------------------------
+    // 2. Serial already exists in inventory?
+    // ------------------------------------------------------
     $existingInventorySerials = Inventory::whereIn('serial_no', $serials)
         ->where('product_id', $productId)
         ->pluck('serial_no')
         ->map(fn($s) => trim($s))
         ->toArray();
 
+    // ------------------------------------------------------
+    // 3. Identify serials not purchased
+    // ------------------------------------------------------
     $notPurchasedSerials = array_diff($serials, $purchasedSerials);
 
+    // ------------------------------------------------------
+    // 4. Build serial validation items response
+    // ------------------------------------------------------
     $items = [];
     foreach ($serials as $s) {
         if (in_array($s, $existingInventorySerials)) {
@@ -949,36 +975,62 @@ public function checkSerialsPurchased(Request $request)
         }
     }
 
-
+    // ------------------------------------------------------
+    // 5. Get product sparepart requirements
+    //    Example stored in DB (JSON):
+    //    [
+    //       { "id": 3, "required_quantity": 2 },
+    //       { "id": 5, "required_quantity": 1 }
+    //    ]
+    // ------------------------------------------------------
     $product = Product::find($productId);
     $requirements = $product->sparepart_requirements ?? [];
 
     $shortages = [];
 
+    // ------------------------------------------------------
+    // 6. Loop through each required sparepart
+    // ------------------------------------------------------
     foreach ($requirements as $req) {
 
         $sparepartId = $req['id'];
         $requiredPerProduct = $req['required_quantity'];
+
+        // Total needed for this assembly request
         $neededTotal = $requiredPerProduct * $assembleCount;
 
+        // Total purchased quantity of this sparepart
         $purchasedQty = DB::table('sparepart_purchase_items')
             ->where('sparepart_id', $sparepartId)
             ->whereNull('deleted_by')
             ->whereNull('deleted_at')
             ->sum('quantity');
 
-        if ($purchasedQty <= 0) continue;
+        if ($purchasedQty <= 0) {
+            $shortages[] = [
+                'sparepart_id'   => $sparepartId,
+                'sparepart_name' => Sparepart::find($sparepartId)->name,
+                'required'       => $neededTotal,
+                'available'      => 0,
+                'shortage'       => $neededTotal,
+            ];
+            continue;
+        }
 
+        // Already assembled quantity for this product
         $assembledCount = DB::table('inventory')
             ->where('product_id', $productId)
             ->whereNull('deleted_by')
             ->whereNull('deleted_at')
             ->count();
 
+        // How much already used
         $usedQty = $assembledCount * $requiredPerProduct;
 
+        // Available = Purchased − Used
         $availableQty = max($purchasedQty - $usedQty, 0);
 
+        // Check shortage
         if ($availableQty < $neededTotal) {
             $shortages[] = [
                 'sparepart_id'   => $sparepartId,
@@ -990,7 +1042,9 @@ public function checkSerialsPurchased(Request $request)
         }
     }
 
-
+    // ------------------------------------------------------
+    // 7. Final response
+    // ------------------------------------------------------
     return response()->json([
         'serial_validation' => [
             'purchased'       => array_values(array_diff($purchasedSerials, $existingInventorySerials)),
@@ -1002,6 +1056,7 @@ public function checkSerialsPurchased(Request $request)
         'attempted_quantity'  => $assembleCount,
     ]);
 }
+
 
 
 public function availableProductCount()

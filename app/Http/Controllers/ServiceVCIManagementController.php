@@ -119,9 +119,6 @@ public function store(Request $request)
         'items.*.status'        => 'nullable|string',
         'items.*.remarks'       => 'nullable|string',
 
-        /* ============================================================
-           CUSTOM ITEM VALIDATION (PCB VS NON-PCB)
-        ============================================================ */
         'items.*' => function ($attribute, $value, $fail) {
 
             $sparepart_id = $value['sparepart_id'] ?? null;
@@ -137,9 +134,6 @@ public function store(Request $request)
             // Decide whether PCB or NON-PCB
             $isPCB = stripos($sparepart->name, 'pcb') !== false;
 
-            /* ============================================================
-               PCB VALIDATION
-            ============================================================ */
             if ($isPCB) {
 
                 if (!$serial) {
@@ -198,9 +192,6 @@ public function store(Request $request)
                 return;
             }
 
-            /* ============================================================
-               NON-PCB VALIDATION
-            ============================================================ */
             if (!$qty || $qty <= 0) {
                 return $fail("Quantity is required for non-PCB spareparts.");
             }
@@ -232,9 +223,6 @@ public function store(Request $request)
         return response()->json(['errors' => $validator->errors()], 422);
     }
 
-    /* ============================================================
-       SAVE MAIN RECORD
-    ============================================================ */
     $receiptFiles = [];
     if ($request->hasFile('receipt_files')) {
         foreach ($request->file('receipt_files') as $file) {
@@ -253,9 +241,6 @@ public function store(Request $request)
         'updated_by'    => Auth::id(),
     ]);
 
-    /* ============================================================
-       SAVE ITEMS
-    ============================================================ */
     foreach ($request->items as $index => $item) {
 
         $spare = DB::table('spareparts')->where('id', $item['sparepart_id'])->first();
@@ -271,13 +256,8 @@ public function store(Request $request)
         VCIServiceItems::create([
             'service_vci_id' => $service->id,
             'sparepart_id'   => $item['sparepart_id'],
-
-            // PCB → save serial, NON-PCB → NULL
             'vci_serial_no'  => $isPCB ? ($item['vci_serial_no'] ?? null) : null,
-
-            // NON-PCB → save qty, PCB → NULL
             'quantity'       => $isPCB ? null : ($item['quantity'] ?? null),
-
             'status'         => $item['status'] ?? null,
             'remarks'        => $item['remarks'] ?? null,
             'upload_image'   => $imagePath,
@@ -317,12 +297,19 @@ public function update(Request $request, $id)
         'challan_no' => 'required|string|max:50',
         'challan_date' => 'required|date',
         'tracking_no'  => 'nullable|string|max:50',
+
+        // receipt files
+        'receipt_files' => 'nullable|array',
         'receipt_files.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:2048',
+
+        // items
         'items' => 'required|array|min:1',
         'items.*.id'            => 'nullable|integer|exists:service_vci_items,id',
         'items.*.sparepart_id'  => 'required|integer',
         'items.*.vci_serial_no' => 'nullable|string|max:50',
         'items.*.quantity'      => 'nullable|integer|min:1',
+
+        // custom validation
         'items.*' => function ($attribute, $value, $fail) use ($id) {
             $sparepart_id = $value['sparepart_id'];
             $serial       = $value['vci_serial_no'] ?? null;
@@ -337,11 +324,13 @@ public function update(Request $request, $id)
             if ($isPCB) {
                 if (!$serial) return $fail("Serial number is required for PCB spareparts.");
                 if (!empty($qty)) return $fail("Quantity is not allowed for PCB spareparts.");
+
                 $exists = DB::table('sparepart_purchase_items')
                     ->where('sparepart_id', $sparepart_id)
                     ->where('serial_no', $serial)
                     ->whereNull('deleted_at')
                     ->exists();
+
                 if (!$exists) return $fail("Serial '{$serial}' was not purchased for this PCB sparepart.");
                 return;
             }
@@ -377,21 +366,37 @@ public function update(Request $request, $id)
         return response()->json(['errors' => $validator->errors()], 422);
     }
 
-    // Handle receipt files
+    /*
+    |--------------------------------------------------------------------------
+    | HANDLE RECEIPT FILES (YOUR REQUIRED CUSTOM METHOD)
+    |--------------------------------------------------------------------------
+    */
     $receiptFiles = $service->receipt_files ?? [];
+
     if ($request->hasFile('receipt_files')) {
-        foreach ($receiptFiles as $file) {
-            if ($file && Storage::disk('public')->exists($file)) {
-                Storage::disk('public')->delete($file);
+
+        // delete previous files
+        foreach ($receiptFiles as $oldFile) {
+            if ($oldFile && file_exists(public_path($oldFile))) {
+                unlink(public_path($oldFile));
             }
         }
+
         $receiptFiles = [];
+
         foreach ($request->file('receipt_files') as $file) {
-            $receiptFiles[] = $file->store('uploads/service_vci/receipts', 'public');
+            $filename = time() . '_' . uniqid() . '_' . $file->getClientOriginalName();
+            $file->move(public_path('uploads/service_vci/receipts'), $filename);
+
+            $receiptFiles[] = 'uploads/service_vci/receipts/' . $filename;
         }
     }
 
-    // Update service
+    /*
+    |--------------------------------------------------------------------------
+    | UPDATE SERVICE HEADER
+    |--------------------------------------------------------------------------
+    */
     $service->update([
         'vendor_id'     => $request->vendor_id,
         'challan_no'    => $request->challan_no,
@@ -401,37 +406,57 @@ public function update(Request $request, $id)
         'updated_by'    => Auth::id(),
     ]);
 
-    // Delete removed items
+    /*
+    |--------------------------------------------------------------------------
+    | DELETE REMOVED ITEMS
+    |--------------------------------------------------------------------------
+    */
     $existingIds = $service->items()->whereNull('deleted_at')->pluck('id')->toArray();
     $incomingIds = collect($request->items)->pluck('id')->filter()->toArray();
     $toDelete = array_diff($existingIds, $incomingIds);
 
     if (!empty($toDelete)) {
+
         $deleteModels = VCIServiceItems::whereIn('id', $toDelete)->get();
         foreach ($deleteModels as $del) {
-            if ($del->upload_image && Storage::disk('public')->exists($del->upload_image)) {
-                Storage::disk('public')->delete($del->upload_image);
+            if ($del->upload_image && file_exists(public_path($del->upload_image))) {
+                unlink(public_path($del->upload_image));
             }
         }
+
         VCIServiceItems::whereIn('id', $toDelete)->update([
             'deleted_at' => now(),
             'deleted_by' => Auth::id(),
         ]);
     }
 
-    // Create / update items
+    /*
+    |--------------------------------------------------------------------------
+    | ADD / UPDATE ITEMS (YOUR CUSTOM FILE UPLOAD)
+    |--------------------------------------------------------------------------
+    */
     foreach ($request->items as $item) {
+
+        // file upload
         $uploadPath = null;
         if (!empty($item['upload_image']) && $item['upload_image'] instanceof \Illuminate\Http\UploadedFile) {
-            $uploadPath = $item['upload_image']->store('uploads/service_vci/items', 'public');
+
+            $file = $item['upload_image'];
+            $filename = time() . '_' . uniqid() . '_' . $file->getClientOriginalName();
+            $file->move(public_path('uploads/service_vci/items'), $filename);
+
+            $uploadPath = 'uploads/service_vci/items/' . $filename;
         }
 
         if (!empty($item['id'])) {
+
             $existing = VCIServiceItems::whereNull('deleted_at')->find($item['id']);
             if ($existing) {
-                if ($uploadPath && $existing->upload_image && Storage::disk('public')->exists($existing->upload_image)) {
-                    Storage::disk('public')->delete($existing->upload_image);
+
+                if ($uploadPath && $existing->upload_image && file_exists(public_path($existing->upload_image))) {
+                    unlink(public_path($existing->upload_image));
                 }
+
                 $existing->update([
                     'sparepart_id'  => $item['sparepart_id'],
                     'vci_serial_no' => $item['vci_serial_no'] ?? null,
@@ -442,7 +467,9 @@ public function update(Request $request, $id)
                     'updated_by'    => Auth::id(),
                 ]);
             }
+
         } else {
+
             VCIServiceItems::create([
                 'service_vci_id' => $service->id,
                 'sparepart_id'   => $item['sparepart_id'],
@@ -457,12 +484,16 @@ public function update(Request $request, $id)
         }
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | RETURN RESPONSE WITH IMAGE URLS
+    |--------------------------------------------------------------------------
+    */
     $service->load(['vendor', 'items.sparepart']);
 
-    // Set URLs for item images
     foreach ($service->items as $item) {
         $item->upload_image = $item->upload_image
-            ? asset('storage/' . $item->upload_image)
+            ? asset($item->upload_image)
             : null;
     }
 
@@ -621,7 +652,6 @@ public function update(Request $request, $id)
 
 public function checkQty($id)
 {
-    // 1️⃣ Check product exists
     $product = Sparepart::find($id);
     if (!$product) {
         return response()->json([
@@ -629,19 +659,16 @@ public function checkQty($id)
         ], 404);
     }
 
-    // 2️⃣ Total purchased quantity (using qty column)
     $purchasedQty = DB::table('sparepart_purchase_items')
         ->where('sparepart_id', $id)
         ->whereNull('deleted_at')
         ->sum('qty');   // <= correct purchase qty
 
-    // 3️⃣ Used in service_vci_items (each row = 1 used serial)
     $usedService = DB::table('service_vci_items')
         ->where('product_id', $id)
         ->whereNull('deleted_at')
         ->count();
 
-    // 4️⃣ Used in assembly (each row = 1 used)
     $usedAssembly = DB::table('inventory')
         ->where('sparepart_id', $id)
         ->whereNull('deleted_at')
@@ -658,7 +685,4 @@ public function checkQty($id)
         'available_qty'  => $availableQty
     ], 200);
 }
-
-
-
 }
