@@ -389,7 +389,7 @@ public function update(Request $request, $id)
                 $file->move(public_path('sparepart_images/recipients'), $filename);
                 $recipientFiles[] = 'sparepart_images/recipients/' . $filename;
             }
-        }
+        }   
 
         $purchase->update([
             'vendor_id' => $request->vendor_id,
@@ -726,18 +726,63 @@ public function deleteItem($purchaseId, $itemId)
 {
     $item = SparepartPurchaseItem::where('purchase_id', $purchaseId)
         ->where('id', $itemId)
+        ->whereNull('deleted_at')
         ->first();
 
     if (!$item) {
         return response()->json([
-            'message' => 'No items found'
+            'message' => 'Item not found'
         ], 404);
     }
 
+    $sparepartId = $item->sparepart_id;
+
+    // ---------------------------------------------------------
+    // 1️⃣ CHECK IF USED IN INVENTORY ASSEMBLY
+    // ---------------------------------------------------------
+    $usedInInventory = Inventory::whereJsonContains('used_spareparts', $sparepartId)
+        ->whereNull('deleted_at')
+        ->exists();
+
+    if ($usedInInventory) {
+        return response()->json([
+            'message' => 'Cannot delete: This sparepart is already used in an assembled product (inventory).'
+        ], 403);
+    }
+
+    // ---------------------------------------------------------
+    // 2️⃣ CHECK IF USED IN SALES
+    // ---------------------------------------------------------
+    $usedInSales = SaleItem::where('sparepart_id', $sparepartId)
+        ->whereNull('deleted_at')
+        ->exists();
+
+    if ($usedInSales) {
+        return response()->json([
+            'message' => 'Cannot delete: This sparepart is linked with a Sale entry.'
+        ], 403);
+    }
+
+    // ---------------------------------------------------------
+    // 3️⃣ CHECK IF USED IN SERVICE REPAIRS
+    // ---------------------------------------------------------
+    $usedInService = ServiceItem::where('sparepart_id', $sparepartId)
+        ->whereNull('deleted_at')
+        ->exists();
+
+    if ($usedInService) {
+        return response()->json([
+            'message' => 'Cannot delete: This sparepart is used in Service/Repair.'
+        ], 403);
+    }
+
+    // ---------------------------------------------------------
+    // 4️⃣ Allow delete if Safe
+    // ---------------------------------------------------------
     $item->deleted_by = auth()->id();
     $item->save();
 
-    // ✅ Soft delete
+    // Soft delete
     $item->delete();
 
     return response()->json([
@@ -745,6 +790,7 @@ public function deleteItem($purchaseId, $itemId)
         'deleted_item_id' => $itemId
     ]);
 }
+
 
 
   public function components()
