@@ -23,6 +23,7 @@ protected $fillable = [
     'created_by',
     'updated_by',
     'deleted_by',
+    'deleted_at'
 ];
 
     protected $casts = [
@@ -46,7 +47,8 @@ public function serviceVCI()
 }
 public function items()
 {
-    return $this->hasMany(VCIServiceItems::class, 'service_vci_id', 'id');
+    return $this->hasMany(VCIServiceItems::class, 'service_vci_id', 'id')
+                ->whereNull('deleted_at');
 }
 public function vendor()
 {
@@ -61,5 +63,6 @@ public function product()
 {
     return $this->belongsTo(Product::class, 'product_id');
 }
+
 
 }

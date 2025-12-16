@@ -101,7 +101,7 @@ $serviceVCI = VCIServiceItems::with([
             $query->where('serial_no', $serial_number);
         })->get();
 
-$saleDetails = $sales->map(function ($sale) use ($serial_number) {
+    $saleDetails = $sales->map(function ($sale) use ($serial_number) {
     $filteredItems = $sale->items->where('serial_no', $serial_number)->map(function ($item) use ($sale) {
         return [
             'id' => $item->id,

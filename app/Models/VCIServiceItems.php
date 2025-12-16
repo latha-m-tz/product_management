@@ -15,6 +15,7 @@ class VCIServiceItems extends Model
         'service_vci_id',
         'vci_serial_no',
         'issue_found',
+         'product_id', 
         'sparepart_id',
         'quantity',
         'upload_image',
@@ -24,6 +25,7 @@ class VCIServiceItems extends Model
         'updated_by',
         'deleted_by',
         'urgent',
+        'deleted_at'
     ];
 
     public function serviceVCI()

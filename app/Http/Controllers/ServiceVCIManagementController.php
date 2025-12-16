@@ -7,10 +7,10 @@ use App\Models\VCIServiceItems;
 use App\Models\Product;
 use App\Models\Vendor;
 use App\Models\spareparts;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 class ServiceVCIManagementController extends Controller
@@ -81,140 +81,85 @@ public function index()
     return response()->json($data, 200);
 }
 
-
 public function store(Request $request)
 {
     $validator = Validator::make($request->all(), [
-        'vendor_id' => [
-            'required',
-            'integer',
-            function ($attribute, $value, $fail) {
-                $exists = Vendor::where('id', $value)
-                    ->whereNull('deleted_at')
-                    ->exists();
 
-                if (!$exists) {
-                    $fail('Selected vendor not found.');
-                }
-            }
-        ],
-
-        'challan_no' => [
-            'required',
-            'string',
-            'max:50',
-            Rule::unique('service_vci', 'challan_no')->whereNull('deleted_at')
-        ],
-
+        // =========================
+        // SERVICE FIELDS
+        // =========================
+        'vendor_id'    => 'required|integer|exists:vendors,id',
+        'challan_no'   => 'required|string|max:50|unique:service_vci,challan_no',
         'challan_date' => 'required|date',
         'tracking_no'  => 'nullable|string|max:50',
 
         'receipt_files.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:2048',
 
+        // =========================
+        // ITEMS ARRAY
+        // =========================
         'items' => 'required|array|min:1',
 
-        'items.*.sparepart_id' => 'required|integer',
-        'items.*.vci_serial_no' => 'nullable|string|max:50',
-        'items.*.quantity'      => 'nullable|integer|min:1',
-        'items.*.status'        => 'nullable|string',
-        'items.*.remarks'       => 'nullable|string',
+        'items.*.status'   => 'required|string',
+        'items.*.remarks'  => 'nullable|string',
 
-        'items.*' => function ($attribute, $value, $fail) {
+        'items.*.product_id'   => 'nullable|integer|exists:product,id',
+        'items.*.sparepart_id' => 'nullable|integer|exists:spareparts,id',
 
-            $sparepart_id = $value['sparepart_id'] ?? null;
-            $serial       = $value['vci_serial_no'] ?? null;
-            $qty          = $value['quantity'] ?? null;
-            $status       = $value['status'] ?? null;
+        'items.*.serial_from'  => 'nullable|integer',
+        'items.*.serial_to'    => 'nullable|integer',
 
-            $sparepart = DB::table('spareparts')->where('id', $sparepart_id)->first();
-            if (!$sparepart) {
-                return $fail("Invalid sparepart selected.");
+        'items.*.quantity'     => 'nullable|integer|min:1',
+
+        // =========================
+        // CUSTOM ROW VALIDATION
+        // =========================
+        'items.*' => function ($attribute, $item, $fail) {
+
+            $productId   = $item['product_id'] ?? null;
+            $sparepartId = $item['sparepart_id'] ?? null;
+
+            // Either product or sparepart required
+            if (!$productId && !$sparepartId) {
+                return $fail('Each row must contain either Product or Sparepart.');
             }
 
-            // Decide whether PCB or NON-PCB
-            $isPCB = stripos($sparepart->name, 'pcb') !== false;
+            // Both not allowed
+            if ($productId && $sparepartId) {
+                return $fail('Row cannot contain both Product and Sparepart.');
+            }
 
-            if ($isPCB) {
-
-                if (!$serial) {
-                    return $fail("Serial number is required for PCB spareparts.");
+            // PRODUCT VALIDATION
+            if ($productId) {
+                if (empty($item['serial_from']) || empty($item['serial_to'])) {
+                    return $fail('Serial From and Serial To are required for product.');
                 }
 
-                if ($qty) {
-                    return $fail("Quantity is NOT allowed for PCB spareparts.");
+                if ($item['serial_to'] < $item['serial_from']) {
+                    return $fail('Serial To must be greater than or equal to Serial From.');
+                }
+            }
+
+            // SPAREPART VALIDATION
+            if ($sparepartId) {
+                if (empty($item['quantity']) || $item['quantity'] <= 0) {
+                    return $fail('Quantity is required for sparepart.');
                 }
 
-                if (!$status) {
-                    return $fail("Status is required for PCB serial {$serial}.");
-                }
-
-                // PCB must exist in purchase stock
-                $exists = DB::table('sparepart_purchase_items')
-                    ->where('sparepart_id', $sparepart_id)
-                    ->where('serial_no', $serial)
+                // STOCK CHECK
+                $purchased = DB::table('sparepart_purchase_items')
+                    ->where('sparepart_id', $sparepartId)
                     ->whereNull('deleted_at')
-                    ->exists();
+                    ->sum('quantity');
 
-                if (!$exists) {
-                    return $fail("Serial '{$serial}' does not exist in purchase stock.");
-                }
-
-                // PCB Status Flow Check
-                $currentStatus = DB::table('service_vci_items')
-                    ->where('vci_serial_no', $serial)
+                $used = DB::table('service_vci_items')
+                    ->where('sparepart_id', $sparepartId)
                     ->whereNull('deleted_at')
-                    ->orderByDesc('id')
-                    ->value('status');
+                    ->sum('quantity');
 
-                $currentStatus = $currentStatus ? trim($currentStatus) : null;
-                $newStatus = trim($status);
-
-                if (!$currentStatus && $newStatus !== 'Inward') {
-                    return $fail("Serial {$serial} must start with Inward.");
+                if ($item['quantity'] > ($purchased - $used)) {
+                    return $fail('Only ' . max(0, $purchased - $used) . ' qty available.');
                 }
-
-                if ($currentStatus === $newStatus) {
-                    return $fail("Serial {$serial} is already '{$newStatus}'.");
-                }
-
-                $allowedNext = [
-                    'Inward'    => ['Testing', 'Delivered'],
-                    'Testing'   => ['Delivered', 'Return'],
-                    'Delivered' => ['Return'],
-                    'Return'    => []
-                ];
-
-                if ($currentStatus && !in_array($newStatus, $allowedNext[$currentStatus])) {
-                    $allowedList = implode(', ', $allowedNext[$currentStatus]);
-                    return $fail("Invalid status. Allowed next: {$allowedList}.");
-                }
-
-                return;
-            }
-
-            if (!$qty || $qty <= 0) {
-                return $fail("Quantity is required for non-PCB spareparts.");
-            }
-
-            if ($serial) {
-                return $fail("Serial number is NOT allowed for non-PCB spareparts.");
-            }
-
-            // Stock check
-            $purchased = DB::table('sparepart_purchase_items')
-                ->where('sparepart_id', $sparepart_id)
-                ->whereNull('deleted_at')
-                ->sum('quantity');
-
-            $used = DB::table('service_vci_items')
-                ->where('sparepart_id', $sparepart_id)
-                ->whereNull('deleted_at')
-                ->sum('quantity');
-
-            $available = max(0, $purchased - $used);
-
-            if ($qty > $available) {
-                return $fail("Only {$available} qty available for this sparepart.");
             }
         }
     ]);
@@ -223,58 +168,90 @@ public function store(Request $request)
         return response()->json(['errors' => $validator->errors()], 422);
     }
 
-    $receiptFiles = [];
-    if ($request->hasFile('receipt_files')) {
-        foreach ($request->file('receipt_files') as $file) {
-            $receiptFiles[] = $file->store('uploads/service_vci/receipts', 'public');
-        }
-    }
+    DB::beginTransaction();
 
-    $service = VCIService::create([
-        'vendor_id'     => $request->vendor_id,
-        'challan_no'    => $request->challan_no,
-        'challan_date'  => $request->challan_date,
-        'tracking_no'   => $request->tracking_no,
-        'receipt_files' => $receiptFiles,
-        'status'        => 'active',
-        'created_by'    => Auth::id(),
-        'updated_by'    => Auth::id(),
-    ]);
+    try {
 
-    foreach ($request->items as $index => $item) {
-
-        $spare = DB::table('spareparts')->where('id', $item['sparepart_id'])->first();
-        $isPCB = stripos($spare->name, 'pcb') !== false;
-
-        $imagePath = null;
-
-        if ($request->hasFile("items.$index.upload_image")) {
-            $imagePath = $request->file("items.$index.upload_image")
-                ->store("uploads/service_vci/items", "public");
-        }
-
-        VCIServiceItems::create([
-            'service_vci_id' => $service->id,
-            'sparepart_id'   => $item['sparepart_id'],
-            'vci_serial_no'  => $isPCB ? ($item['vci_serial_no'] ?? null) : null,
-            'quantity'       => $isPCB ? null : ($item['quantity'] ?? null),
-            'status'         => $item['status'] ?? null,
-            'remarks'        => $item['remarks'] ?? null,
-            'upload_image'   => $imagePath,
-            'created_by'     => Auth::id(),
-            'updated_by'     => Auth::id(),
+        // =========================
+        // CREATE SERVICE
+        // =========================
+        $service = VCIService::create([
+            'vendor_id'    => $request->vendor_id,
+            'challan_no'   => $request->challan_no,
+            'challan_date' => $request->challan_date,
+            'tracking_no'  => $request->tracking_no,
+            'created_by'   => Auth::id(),
+            'updated_by'   => Auth::id(),
         ]);
+
+        // =========================
+        // STORE ITEMS
+        // =========================
+        foreach ($request->items as $index => $item) {
+
+            $imagePath = null;
+            if ($request->hasFile("items.$index.upload_image")) {
+                $imagePath = $request->file("items.$index.upload_image")
+                    ->store('uploads/service_vci/items', 'public');
+            }
+
+            // =========================
+            // PRODUCT → SERIAL ROWS
+            // =========================
+            if (!empty($item['product_id'])) {
+
+                for ($s = $item['serial_from']; $s <= $item['serial_to']; $s++) {
+                    VCIServiceItems::create([
+                        'service_vci_id' => $service->id,
+                        'product_id'     => $item['product_id'],
+                        'sparepart_id'   => null,
+                        'quantity'       => null,
+                        'vci_serial_no'  => $s,
+                        'status'         => $item['status'],
+                        'remarks'        => $item['remarks'] ?? null,
+                        'upload_image'   => $imagePath,
+                        'created_by'     => Auth::id(),
+                        'updated_by'     => Auth::id(),
+                    ]);
+                }
+            }
+
+            // =========================
+            // SPAREPART → QUANTITY ROW
+            // =========================
+            if (!empty($item['sparepart_id'])) {
+
+                VCIServiceItems::create([
+                    'service_vci_id' => $service->id,
+                    'sparepart_id'   => $item['sparepart_id'], // ✅ FIXED
+                    'product_id'     => null,
+                    'vci_serial_no'  => null,
+                    'quantity'       => $item['quantity'],
+                    'status'         => $item['status'],
+                    'remarks'        => $item['remarks'] ?? null,
+                    'upload_image'   => $imagePath,
+                    'created_by'     => Auth::id(),
+                    'updated_by'     => Auth::id(),
+                ]);
+            }
+        }
+
+        DB::commit();
+
+        return response()->json([
+            'message' => 'VCI Service created successfully',
+            'data'    => $service->load('items')
+        ], 201);
+
+    } catch (\Exception $e) {
+        DB::rollBack();
+
+        return response()->json([
+            'message' => 'Something went wrong',
+            'error'   => $e->getMessage()
+        ], 500);
     }
-
-    $service->load(['items.sparepart', 'vendor']);
-
-    return response()->json([
-        'message' => 'VCI Service created successfully',
-        'data'    => $service
-    ], 201);
 }
-
-
 
 public function update(Request $request, $id)
 {
@@ -284,81 +261,72 @@ public function update(Request $request, $id)
     }
 
     $validator = Validator::make($request->all(), [
-        'vendor_id' => [
-            'required',
-            'integer',
-            function ($attribute, $value, $fail) {
-                $exists = Vendor::where('id', $value)
-                    ->whereNull('deleted_at')
-                    ->exists();
-                if (!$exists) $fail('Selected vendor not found.');
-            }
-        ],
-        'challan_no' => 'required|string|max:50',
+
+        'vendor_id'    => 'required|integer|exists:vendors,id',
+        'challan_no'   => 'required|string|max:50|unique:service_vci,challan_no,' . $id,
         'challan_date' => 'required|date',
         'tracking_no'  => 'nullable|string|max:50',
 
-        // receipt files
-        'receipt_files' => 'nullable|array',
-        'receipt_files.*' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:2048',
-
-        // items
         'items' => 'required|array|min:1',
-        'items.*.id'            => 'nullable|integer|exists:service_vci_items,id',
-        'items.*.sparepart_id'  => 'required|integer',
-        'items.*.vci_serial_no' => 'nullable|string|max:50',
-        'items.*.quantity'      => 'nullable|integer|min:1',
 
-        // custom validation
-        'items.*' => function ($attribute, $value, $fail) use ($id) {
-            $sparepart_id = $value['sparepart_id'];
-            $serial       = $value['vci_serial_no'] ?? null;
-            $qty          = $value['quantity'] ?? null;
-            $itemId       = $value['id'] ?? null;
+        'items.*.id'           => 'nullable|integer|exists:service_vci_items,id',
+        'items.*.status'       => 'required|string',
+        'items.*.remarks'      => 'nullable|string',
 
-            $sparepart = DB::table('spareparts')->where('id', $sparepart_id)->first();
-            if (!$sparepart) return $fail("Invalid sparepart selected.");
+        'items.*.product_id'   => 'nullable|integer|exists:product,id',
+        'items.*.sparepart_id' => 'nullable|integer|exists:spareparts,id',
 
-            $isPCB = stripos($sparepart->name, 'pcb') !== false;
+        'items.*.serial_from'  => 'nullable|integer',
+        'items.*.serial_to'    => 'nullable|integer',
 
-            if ($isPCB) {
-                if (!$serial) return $fail("Serial number is required for PCB spareparts.");
-                if (!empty($qty)) return $fail("Quantity is not allowed for PCB spareparts.");
+        'items.*.quantity'     => 'nullable|integer|min:1',
 
-                $exists = DB::table('sparepart_purchase_items')
-                    ->where('sparepart_id', $sparepart_id)
-                    ->where('serial_no', $serial)
-                    ->whereNull('deleted_at')
-                    ->exists();
+        'items.*' => function ($attribute, $item, $fail) use ($id) {
 
-                if (!$exists) return $fail("Serial '{$serial}' was not purchased for this PCB sparepart.");
-                return;
+            $productId   = $item['product_id'] ?? null;
+            $sparepartId = $item['sparepart_id'] ?? null;
+
+            // Either product or sparepart
+            if (!$productId && !$sparepartId) {
+                return $fail('Each row must contain either Product or Sparepart.');
             }
 
-            if (!$qty || $qty <= 0) return $fail("Quantity is required for non-PCB spareparts.");
-            if (!empty($serial)) return $fail("Serial number is not allowed for non-PCB spareparts.");
+            if ($productId && $sparepartId) {
+                return $fail('Row cannot contain both Product and Sparepart.');
+            }
 
-            $purchased = DB::table('sparepart_purchase_items')
-                ->where('sparepart_id', $sparepart_id)
-                ->whereNull('deleted_at')
-                ->sum('quantity');
+            if ($productId) {
+                if (empty($item['serial_from']) || empty($item['serial_to'])) {
+                    return $fail('Serial From and Serial To are required for product.');
+                }
 
-            $usedOther = DB::table('service_vci_items')
-                ->where('sparepart_id', $sparepart_id)
-                ->where('service_vci_id', '!=', $id)
-                ->whereNull('deleted_at')
-                ->sum('quantity');
+                if ($item['serial_to'] < $item['serial_from']) {
+                    return $fail('Serial To must be greater than or equal to Serial From.');
+                }
+            }
 
-            $usedInside = DB::table('service_vci_items')
-                ->where('sparepart_id', $sparepart_id)
-                ->where('service_vci_id', $id)
-                ->where('id', '!=', $itemId)
-                ->whereNull('deleted_at')
-                ->sum('quantity');
+            if ($sparepartId) {
+                if (empty($item['quantity']) || $item['quantity'] <= 0) {
+                    return $fail('Quantity is required for sparepart.');
+                }
 
-            $available = max(0, $purchased - ($usedOther + $usedInside));
+                $purchased = DB::table('sparepart_purchase_items')
+                    ->where('sparepart_id', $sparepartId)
+                    ->whereNull('deleted_at')
+                    ->sum('quantity');
 
-            if ($qty > $available) return $fail("Only {$available} quantity available for this sparepart.");
+                $usedOther = DB::table('service_vci_items')
+                    ->where('sparepart_id', $sparepartId)
+                    ->where('service_vci_id', '!=', $id)
+                    ->whereNull('deleted_at')
+                    ->sum('quantity');
+
+                $available = max(0, $purchased - $usedOther);
+
+                if ($item['quantity'] > $available) {
+                    return $fail("Only {$available} qty available.");
+                }
+            }
         }
     ]);
 
@@ -366,141 +334,106 @@ public function update(Request $request, $id)
         return response()->json(['errors' => $validator->errors()], 422);
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | HANDLE RECEIPT FILES (YOUR REQUIRED CUSTOM METHOD)
-    |--------------------------------------------------------------------------
-    */
-    $receiptFiles = $service->receipt_files ?? [];
+    DB::beginTransaction();
 
-    if ($request->hasFile('receipt_files')) {
+    try {
 
-        // delete previous files
-        foreach ($receiptFiles as $oldFile) {
-            if ($oldFile && file_exists(public_path($oldFile))) {
-                unlink(public_path($oldFile));
-            }
-        }
-
-        $receiptFiles = [];
-
-        foreach ($request->file('receipt_files') as $file) {
-            $filename = time() . '_' . uniqid() . '_' . $file->getClientOriginalName();
-            $file->move(public_path('uploads/service_vci/receipts'), $filename);
-
-            $receiptFiles[] = 'uploads/service_vci/receipts/' . $filename;
-        }
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | UPDATE SERVICE HEADER
-    |--------------------------------------------------------------------------
-    */
-    $service->update([
-        'vendor_id'     => $request->vendor_id,
-        'challan_no'    => $request->challan_no,
-        'challan_date'  => $request->challan_date,
-        'tracking_no'   => $request->tracking_no ?? $service->tracking_no,
-        'receipt_files' => $receiptFiles,
-        'updated_by'    => Auth::id(),
-    ]);
-
-    /*
-    |--------------------------------------------------------------------------
-    | DELETE REMOVED ITEMS
-    |--------------------------------------------------------------------------
-    */
-    $existingIds = $service->items()->whereNull('deleted_at')->pluck('id')->toArray();
-    $incomingIds = collect($request->items)->pluck('id')->filter()->toArray();
-    $toDelete = array_diff($existingIds, $incomingIds);
-
-    if (!empty($toDelete)) {
-
-        $deleteModels = VCIServiceItems::whereIn('id', $toDelete)->get();
-        foreach ($deleteModels as $del) {
-            if ($del->upload_image && file_exists(public_path($del->upload_image))) {
-                unlink(public_path($del->upload_image));
-            }
-        }
-
-        VCIServiceItems::whereIn('id', $toDelete)->update([
-            'deleted_at' => now(),
-            'deleted_by' => Auth::id(),
+        // =========================
+        // UPDATE SERVICE HEADER
+        // =========================
+        $service->update([
+            'vendor_id'    => $request->vendor_id,
+            'challan_no'   => $request->challan_no,
+            'challan_date' => $request->challan_date,
+            'tracking_no'  => $request->tracking_no,
+            'updated_by'   => Auth::id(),
         ]);
-    }
 
-    /*
-    |--------------------------------------------------------------------------
-    | ADD / UPDATE ITEMS (YOUR CUSTOM FILE UPLOAD)
-    |--------------------------------------------------------------------------
-    */
-    foreach ($request->items as $item) {
+        // =========================
+        // DELETE OLD ITEMS (FULL RESET)
+        // =========================
+        $oldItems = $service->items()->whereNull('deleted_at')->get();
 
-        // file upload
-        $uploadPath = null;
-        if (!empty($item['upload_image']) && $item['upload_image'] instanceof \Illuminate\Http\UploadedFile) {
-
-            $file = $item['upload_image'];
-            $filename = time() . '_' . uniqid() . '_' . $file->getClientOriginalName();
-            $file->move(public_path('uploads/service_vci/items'), $filename);
-
-            $uploadPath = 'uploads/service_vci/items/' . $filename;
+        foreach ($oldItems as $old) {
+            if ($old->upload_image && file_exists(public_path($old->upload_image))) {
+                unlink(public_path($old->upload_image));
+            }
         }
 
-        if (!empty($item['id'])) {
+        VCIServiceItems::where('service_vci_id', $service->id)
+            ->whereNull('deleted_at')
+            ->update([
+                'deleted_at' => now(),
+                'deleted_by' => Auth::id(),
+            ]);
 
-            $existing = VCIServiceItems::whereNull('deleted_at')->find($item['id']);
-            if ($existing) {
+        // =========================
+        // RE-CREATE ITEMS (SAME AS STORE)
+        // =========================
+        foreach ($request->items as $index => $item) {
 
-                if ($uploadPath && $existing->upload_image && file_exists(public_path($existing->upload_image))) {
-                    unlink(public_path($existing->upload_image));
+            $imagePath = null;
+            if ($request->hasFile("items.$index.upload_image")) {
+                $imagePath = $request->file("items.$index.upload_image")
+                    ->store('uploads/service_vci/items', 'public');
+            }
+
+            // PRODUCT → SERIAL ROWS
+            if (!empty($item['product_id'])) {
+
+                for ($s = $item['serial_from']; $s <= $item['serial_to']; $s++) {
+                    VCIServiceItems::create([
+                        'service_vci_id' => $service->id,
+                        'product_id'     => $item['product_id'],
+                        'sparepart_id'   => null,
+                        'quantity'       => null,
+                        'vci_serial_no'  => $s,
+                        'status'         => $item['status'],
+                        'remarks'        => $item['remarks'] ?? null,
+                        'upload_image'   => $imagePath,
+                        'created_by'     => Auth::id(),
+                        'updated_by'     => Auth::id(),
+                    ]);
                 }
+            }
 
-                $existing->update([
-                    'sparepart_id'  => $item['sparepart_id'],
-                    'vci_serial_no' => $item['vci_serial_no'] ?? null,
-                    'quantity'      => $item['quantity'] ?? null,
-                    'status'        => $item['status'] ?? $existing->status,
-                    'remarks'       => $item['remarks'] ?? $existing->remarks,
-                    'upload_image'  => $uploadPath ?? $existing->upload_image,
-                    'updated_by'    => Auth::id(),
+            // SPAREPART → QUANTITY ROW
+            if (!empty($item['sparepart_id'])) {
+
+                VCIServiceItems::create([
+                    'service_vci_id' => $service->id,
+                    'sparepart_id'   => $item['sparepart_id'],
+                    'product_id'     => null,
+                    'vci_serial_no'  => null,
+                    'quantity'       => $item['quantity'],
+                    'status'         => $item['status'],
+                    'remarks'        => $item['remarks'] ?? null,
+                    'upload_image'   => $imagePath,
+                    'created_by'     => Auth::id(),
+                    'updated_by'     => Auth::id(),
                 ]);
             }
-
-        } else {
-
-            VCIServiceItems::create([
-                'service_vci_id' => $service->id,
-                'sparepart_id'   => $item['sparepart_id'],
-                'vci_serial_no'  => $item['vci_serial_no'] ?? null,
-                'quantity'       => $item['quantity'] ?? null,
-                'status'         => $item['status'] ?? null,
-                'remarks'        => $item['remarks'] ?? null,
-                'upload_image'   => $uploadPath,
-                'created_by'     => Auth::id(),
-                'updated_by'     => Auth::id(),
-            ]);
         }
+
+        DB::commit();
+
+        return response()->json([
+            'message' => 'VCI Service updated successfully',
+            'data'    => $service->load('items')
+        ], 200);
+
+    } catch (\Exception $e) {
+        DB::rollBack();
+
+        return response()->json([
+            'message' => 'Something went wrong',
+            'error'   => $e->getMessage()
+        ], 500);
     }
-
-    /*
-    |--------------------------------------------------------------------------
-    | RETURN RESPONSE WITH IMAGE URLS
-    |--------------------------------------------------------------------------
-    */
-    $service->load(['vendor', 'items.sparepart']);
-
-    foreach ($service->items as $item) {
-        $item->upload_image = $item->upload_image
-            ? asset($item->upload_image)
-            : null;
-    }
-
-    return response()->json($service, 200);
 }
 
- public function show($id)
+
+public function show($id)
 {
     $service = VCIService::with(['vendor', 'items.sparepart'])
         ->whereNull('deleted_at')
@@ -510,60 +443,95 @@ public function update(Request $request, $id)
         return response()->json(['message' => 'Service VCI not found'], 404);
     }
 
-    $vendorName = $service->vendor ? $service->vendor->vendor : null;
-
-    $receiptFiles = [];
-    if (is_array($service->receipt_files)) {
-        foreach ($service->receipt_files as $file) {
-            $receiptFiles[] = asset('storage/' . $file);
-        }
-    }
+    $groupedItems = [];
+    $productGroups = [];
 
     foreach ($service->items as $item) {
-        $item->upload_image = $item->upload_image
-            ? asset('storage/' . ltrim($item->upload_image, '/'))
-            : null;
+
+        /* =========================
+           PRODUCT → GROUP SERIALS
+        ========================= */
+        if ($item->product_id) {
+
+            $key = $item->product_id . '|' . $item->status;
+
+            if (!isset($productGroups[$key])) {
+                $productGroups[$key] = [
+                    'id'           => $item->id,
+                    'type'         => 'product',
+                    'product_id'   => $item->product_id,
+                    'serial_from'  => $item->vci_serial_no,
+                    'serial_to'    => $item->vci_serial_no,
+                    'status'       => $item->status,
+                    'remarks'      => $item->remarks,
+                    'upload_image' => $item->upload_image
+                        ? asset('storage/' . ltrim($item->upload_image, '/'))
+                        : null,
+                ];
+            } else {
+                $productGroups[$key]['serial_from'] = min(
+                    $productGroups[$key]['serial_from'],
+                    $item->vci_serial_no
+                );
+                $productGroups[$key]['serial_to'] = max(
+                    $productGroups[$key]['serial_to'],
+                    $item->vci_serial_no
+                );
+            }
+
+            continue;
+        }
+
+        $groupedItems[] = [
+            'id'            => $item->id,
+            'type'          => 'sparepart',
+            'sparepart_id'  => $item->sparepart_id,
+            'quantity'      => $item->quantity,
+            'status'        => $item->status,
+            'remarks'       => $item->remarks,
+            'upload_image'  => $item->upload_image
+                ? asset('storage/' . ltrim($item->upload_image, '/'))
+                : null,
+        ];
     }
 
+    // Merge product groups
+    $groupedItems = array_merge($groupedItems, array_values($productGroups));
+
     return response()->json([
-        'id'                => $service->id,
-        'vendor_id'         => $service->vendor_id,
-        'vendor_name'       => $vendorName,
-        'challan_no'        => $service->challan_no,
-        'challan_date'      => $service->challan_date,
-        'tracking_no'       => $service->tracking_no,
-        'status'            => $service->status,
-        'receipt_files'     => $service->receipt_files,
-        'receipt_files_urls'=> $receiptFiles,
-        'items'             => $service->items,
-        'created_at'        => $service->created_at,
-        'updated_at'        => $service->updated_at,
+        'id'           => $service->id,
+        'vendor_id'    => $service->vendor_id,
+        'vendor_name'  => optional($service->vendor)->vendor,
+        'challan_no'   => $service->challan_no,
+        'challan_date' => $service->challan_date,
+        'tracking_no'  => $service->tracking_no,
+        'items'        => $groupedItems,
+        'created_at'   => $service->created_at,
+        'updated_at'   => $service->updated_at,
+    ], 200);
+}
+
+public function destroyItem($id)
+{
+    $item = VCIServiceItems::whereNull('deleted_at')->find($id);
+
+    if (!$item) {
+        return response()->json([
+            'message' => 'Service item not found'
+        ], 404);
+    }
+
+    $item->update([
+        'deleted_at' => now(),
+        'deleted_by' => Auth::id(),
+    ]);
+
+    return response()->json([
+        'message' => 'Service item deleted successfully'
     ], 200);
 }
 
 
-
-    public function destroy($id)
-    {
-        $service = VCIService::whereNull('deleted_at')->find($id);
-        if (!$service) {
-            return response()->json(['message' => 'Service VCI not found'], 404);
-        }
-
-        // mark items deleted
-        $service->items()->whereNull('deleted_at')->update([
-            'deleted_at' => now(),
-            'deleted_by' => Auth::id()
-        ]);
-
-        // mark service deleted
-        $service->update([
-            'deleted_at' => now(),
-            'deleted_by' => Auth::id()
-        ]);
-
-        return response()->json(['message' => 'Service VCI and its items soft deleted successfully'], 200);
-    }
 
    
     public function getAllVCISerialNumbers()
@@ -582,7 +550,7 @@ public function update(Request $request, $id)
     {
         $query = VCIServiceItems::query()
             ->with(['serviceVCI', 'product', 'serviceVCI.vendor'])
-            ->whereNull('service_vci_items.deleted_at'); // table-specific null check
+            ->whereNull('service_vci_items.deleted_at');
 
         // Filter by from_place (on service)
         if ($request->filled('from_place')) {
@@ -683,6 +651,53 @@ public function checkQty($id)
         'used_service'   => $usedService,
         'used_assembly'  => $usedAssembly,
         'available_qty'  => $availableQty
+    ], 200);
+}
+public function checkStatus(Request $request)
+{
+    $request->validate([
+        'vendor_id'  => 'required|integer|exists:vendors,id',
+        'serial_no'  => 'required|string|max:50',
+        'product_id' => 'required|integer|exists:product,id',
+    ]);
+
+    $lastEntry = DB::table('service_vci_items')
+        ->where('vendor_id', $request->vendor_id)
+        ->where('product_id', $request->product_id)
+        ->where('vci_serial_no', $request->serial_no)
+        ->whereNull('deleted_at')
+        ->orderByDesc('id')
+        ->first();
+
+    $current = $lastEntry?->status;
+
+    $allowed = [];
+
+    switch ($current) {
+        case null:
+            $allowed = ['Inward'];
+            break;
+
+        case 'Inward':
+            $allowed = ['Testing'];
+            break;
+
+        case 'Testing':
+            $allowed = ['Delivered'];
+            break;
+
+        case 'Delivered':
+            $allowed = ['Return'];
+            break;
+
+        case 'Return':
+            $allowed = [];
+            break;
+    }
+
+    return response()->json([
+        'current_status' => $current,
+        'allowed_status' => $allowed,
     ], 200);
 }
 }

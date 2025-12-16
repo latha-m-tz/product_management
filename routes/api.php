@@ -104,7 +104,7 @@ Route::prefix('inventory')->middleware(['jwt.auth'])->group(function(){
 Route::get('/show', [InventoryController::class, 'getAllItems']);
 Route::get('/serialrange/{from_serial}/{to_serial}', [InventoryController::class, 'serialrangeItems']);
 Route::put('/serialrange/{from_serial}/{to_serial}', [InventoryController::class, 'updateSerialRange']);
-Route::get('/serialranges', [InventoryController::class, 'serialRanges']);
+Route::get('/serialranges', [InventoryController::class, 'serialRanges']);      
 Route::delete('/serialrange/{from_serial}/{to_serial}', [InventoryController::class, 'deleteSerialRange']);
 Route::get('/', [InventoryController::class, 'index']);
 Route::get('/{id}', [InventoryController::class, 'show']);
@@ -135,7 +135,7 @@ Route::get('/service-vci', [ServiceVCIManagementController::class, 'index'])->mi
 Route::post('/service-vci', [ServiceVCIManagementController::class, 'store'])->middleware('jwt.auth');
 Route::get('/service-vci/{id}', [ServiceVCIManagementController::class, 'show'])->middleware('jwt.auth');
 Route::put('/service-vci/{id}', [ServiceVCIManagementController::class, 'update'])->middleware('jwt.auth');
-Route::delete('/service-vci/{id}', [ServiceVCIManagementController::class, 'destroy'])->middleware('jwt.auth');
+Route::delete('/service-vci-item/{id}', [ServiceVCIManagementController::class, 'destroyItem'])->middleware('jwt.auth');
 Route::get('/barcode/{barcode}', [BarcodeController::class, 'getProductInfo'])->middleware('jwt.auth');
 Route::get('get-serviceserials', [ServiceVCIManagementController::class, 'getAllVCISerialNumbers'])->middleware('jwt.auth');
 Route::get('/serviceitems',[ServiceVCIManagementController::class,'getAllServiceItems'])->middleware('jwt.auth');
@@ -150,4 +150,6 @@ Route::get('/get-purchase',[SparepartPurchaseController::class,'lastFourPurchase
 Route::get('/overallsale',[SalesController::class,'getSalesWithTotals'])->middleware('jwt.auth');
 
 Route::get('/getProductStock/{id}', [ProductController::class, 'getProductStock'])->middleware('jwt.auth');
-Route::get('/products/stock/all', [ProductController::class, 'getAllProductStocks']);
+Route::get('/products/stock/all', [ProductController::class, 'getAllProductStocks'])->middleware('jwt.auth');
+
+Route::get('/service/check-status', [ServiceVCIManagementController::class, 'checkStatus'])->middleware('jwt.auth');
