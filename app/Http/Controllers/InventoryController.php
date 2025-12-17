@@ -29,7 +29,6 @@ class InventoryController extends Controller
     {
         $query = Inventory::with(['product', 'tester', 'productType']);
 
-        // Filter by serial number range
         if ($request->filled('serial_from')) {
             $query->where('serial_no', '>=', $request->serial_from);
         }
@@ -37,17 +36,14 @@ class InventoryController extends Controller
             $query->where('serial_no', '<=', $request->serial_to);
         }
 
-        // Filter by tested status
         if ($request->filled('tested_status')) {
             $query->where('tested_status', $request->tested_status);
         }
 
-        // Filter by product
         if ($request->filled('product_id')) {
             $query->where('product_id', $request->product_id);
         }
 
-        // Filter by product type
         if ($request->filled('product_type_id')) {
             $query->whereHas('productType', function ($q) use ($request) {
                 $q->where('id', $request->product_type_id);
@@ -130,7 +126,6 @@ public function store(Request $request)
         $fromSerial = str_pad($serialNumbers->first(), 6, '0', STR_PAD_LEFT);
         $toSerial   = str_pad($serialNumbers->last(), 6, '0', STR_PAD_LEFT);
 
-        // Detect if serials are consecutive
         $isConsecutive = true;
         for ($i = 1; $i < count($serialNumbers); $i++) {
             if ($serialNumbers[$i] !== $serialNumbers[$i - 1] + 1) {
@@ -147,7 +142,7 @@ public function store(Request $request)
 
             $serial = trim($item['serial_no']);
 
-            $isPurchased = \App\Models\SparepartPurchaseItem::where('serial_no', $serial)
+            $isPurchased = SparepartPurchaseItem::where('serial_no', $serial)
                 ->whereNull('deleted_at')
                 ->exists();
 
@@ -254,13 +249,14 @@ public function store(Request $request)
 
 
 
+
 public function update(Request $request, $id)
 {
     try {
         $item = \App\Models\Inventory::findOrFail($id);
 
         $validated = $request->validate([
-            'product_id'       => 'required|integer|exists:products,id',
+            'product_id'       => 'required|integer|exists:product,id',
             'product_type_id'  => 'required|integer|exists:product_types,id',
             'serial_no'        => 'required|string|max:100|unique:inventory,serial_no,' . $id,
             'firmware_version' => 'nullable|string|max:100',
@@ -273,7 +269,6 @@ public function update(Request $request, $id)
             'quantity'         => 'required|integer|min:1',
         ]);
 
-        // 🧠 Normalize serials to numeric (if they contain prefixes)
         $fromNum = (int) filter_var($validated['from_serial'], FILTER_SANITIZE_NUMBER_INT);
         $toNum   = (int) filter_var($validated['to_serial'], FILTER_SANITIZE_NUMBER_INT);
 
@@ -342,16 +337,14 @@ public function update(Request $request, $id)
 public function getAllActiveSerials(Request $request)
 {
     try {
-        $query = \App\Models\Inventory::with('product:id,name')
+        $query = Inventory::with('product:id,name')
             ->select('id', 'product_id', 'serial_no', 'tested_status', 'tested_by', 'created_at')
             ->whereNull('deleted_by')
             ->whereNull('deleted_at');
 
-        // ✅ Optional filter by product (series) name
         if ($request->has('series')) {
             $series = urldecode($request->query('series'));
 
-            // Remove text inside parentheses if present (like "VCI 5-SERIES-12V (TYPE A)")
             if (preg_match('/^(.*)\((.*)\)$/', $series, $matches)) {
                 $series = trim($matches[1]);
             }
@@ -436,7 +429,7 @@ public function deleteSerial($serial_no)
 
         if ($usedInSales) {
             return response()->json([
-                'message' => "❌ Serial {$serial_no} cannot be deleted. It is already used in a Sale.",
+                'message' => " Serial {$serial_no} cannot be deleted. It is already used in a Sale.",
                 'status'  => false,
             ], 403);
         }
@@ -451,7 +444,7 @@ public function deleteSerial($serial_no)
         ], 200);
 
     } catch (\Exception $e) {
-        \Log::error("❌ Inventory delete error: " . $e->getMessage());
+        \Log::error(" Inventory delete error: " . $e->getMessage());
 
         return response()->json([
             'message' => 'Failed to delete serial number.',
@@ -584,11 +577,6 @@ public function deleteSerial($serial_no)
                     $fail("Invalid product.");
                 }
             }],
-            // 'product_type_id' => ['required', 'integer', function($attribute, $value, $fail) {
-            //     if (!\App\Models\ProductType::where('id', $value)->whereNull('deleted_at')->exists()) {
-            //         $fail("Invalid product type.");
-            //     }
-            // }],
             'items' => 'required|array|min:1',
             'items.*.from_serial' => 'required|string|max:100',
             'items.*.to_serial' => 'required|string|max:100',
@@ -911,95 +899,101 @@ public function deleteSerial($serial_no)
 //         'missing_serials' => $missingSerials,
 //     ]);
 // }
-
-
-
-
 public function checkSerialsPurchased(Request $request)
 {
     $request->validate([
-        'serials' => 'required|array',
-        'serials.*' => 'required|string',
+        'serials'    => 'required|array',
+        'serials.*'  => 'required|string',
         'product_id' => 'required|integer',
     ]);
 
-    $serials = array_map('trim', $request->serials);
-    $productId = $request->product_id;
-    $assembleCount = count($serials);
+    $pcbSerials = array_map('trim', $request->serials);
+    $productId  = $request->product_id;
+    $assembleCount = count($pcbSerials);
 
     // ------------------------------------------------------
-    // 1. Purchased serial check
+    // 1. Check PCB serials are purchased
     // ------------------------------------------------------
-    $purchasedSerials = SparepartPurchaseItem::whereIn('serial_no', $serials)
+    $purchasedPCBSerials = SparepartPurchaseItem::whereIn('serial_no', $pcbSerials)
+        ->whereHas('sparepart', function ($q) {
+            $q->where('name', 'LIKE', 'PCB_%');
+        })
         ->pluck('serial_no')
-        ->map(fn($s) => trim($s))
         ->toArray();
 
-    // ------------------------------------------------------
-    // 2. Serial already exists in inventory?
-    // ------------------------------------------------------
-    $existingInventorySerials = Inventory::whereIn('serial_no', $serials)
-        ->where('product_id', $productId)
-        ->pluck('serial_no')
-        ->map(fn($s) => trim($s))
-        ->toArray();
+    $notPurchasedPCBSerials = array_diff($pcbSerials, $purchasedPCBSerials);
 
-    // ------------------------------------------------------
-    // 3. Identify serials not purchased
-    // ------------------------------------------------------
-    $notPurchasedSerials = array_diff($serials, $purchasedSerials);
-
-    // ------------------------------------------------------
-    // 4. Build serial validation items response
-    // ------------------------------------------------------
-    $items = [];
-    foreach ($serials as $s) {
-        if (in_array($s, $existingInventorySerials)) {
-            $items[] = [
-                'serial_no' => $s,
-                'status' => 'exists',
-                'message' => 'Already exists in inventory.',
-            ];
-        } elseif (in_array($s, $notPurchasedSerials)) {
-            $items[] = [
-                'serial_no' => $s,
-                'status' => 'not_purchased',
-                'message' => 'Serial not purchased.',
-            ];
-        } else {
-            $items[] = [
-                'serial_no' => $s,
-                'status' => 'purchased',
-                'message' => 'Serial purchased and available to add.',
-            ];
-        }
+    if (!empty($notPurchasedPCBSerials)) {
+        return response()->json([
+            'error' => 'PCB serial not purchased',
+            'serials' => array_values($notPurchasedPCBSerials),
+            'can_assemble' => false,
+        ], 422);
     }
 
     // ------------------------------------------------------
-    // 5. Get product sparepart requirements
-    //    Example stored in DB (JSON):
-    //    [
-    //       { "id": 3, "required_quantity": 2 },
-    //       { "id": 5, "required_quantity": 1 }
-    //    ]
+    // 2. Detect PCB series (ex: 9_SERIES)
     // ------------------------------------------------------
+    $pcbSparepart = Sparepart::where('name', 'LIKE', 'PCB_%')->first();
+
+    preg_match('/PCB_(\d+_SERIES)/', $pcbSparepart->name, $match);
+    $series = $match[1] ?? null;
+
+    if (!$series) {
+        return response()->json([
+            'error' => 'Unable to detect PCB series',
+            'can_assemble' => false,
+        ], 422);
+    }
+
+    // ------------------------------------------------------
+    // 3. Find matching BARCODE sparepart
+    // ------------------------------------------------------
+    $barcodeSparepart = Sparepart::where('name', 'LIKE', "BARCODE_STICKER_{$series}%")
+        ->first();
+
+    if (!$barcodeSparepart) {
+        return response()->json([
+            'error' => 'Barcode sparepart not configured',
+            'can_assemble' => false,
+        ], 422);
+    }
+
+    // ------------------------------------------------------
+    // 4. Fetch purchased BARCODE serials
+    // ------------------------------------------------------
+    $purchasedBarcodeSerials = SparepartPurchaseItem::where('sparepart_id', $barcodeSparepart->id)
+        ->pluck('serial_no')
+        ->toArray();
+
+    // ------------------------------------------------------
+    // 5. SERIAL-TO-SERIAL MATCH CHECK
+    // ------------------------------------------------------
+    $missingBarcodes = array_diff($pcbSerials, $purchasedBarcodeSerials);
+
+    if (!empty($missingBarcodes)) {
+        return response()->json([
+            'error' => 'Matching barcode serial not purchased',
+            'missing_barcode_serials' => array_values($missingBarcodes),
+            'message' => 'Each PCB serial must have the same barcode serial',
+            'can_assemble' => false,
+        ], 422);
+    }
+
+    // ======================================================
+    // 6. SPAREPART SHORTAGE CHECK (UNCHANGED LOGIC)
+    // ======================================================
     $product = Product::find($productId);
     $requirements = $product->sparepart_requirements ?? [];
-
     $shortages = [];
 
-    // ------------------------------------------------------
-    // 6. Loop through each required sparepart
-    // ------------------------------------------------------
     foreach ($requirements as $req) {
 
         $sparepartId = $req['id'];
         $requiredPerProduct = $req['required_quantity'];
 
-        // Total needed for this assembly request
         $neededTotal = $requiredPerProduct * $assembleCount;
 
-        // Total purchased quantity of this sparepart
         $purchasedQty = DB::table('sparepart_purchase_items')
             ->where('sparepart_id', $sparepartId)
             ->whereNull('deleted_by')
@@ -1017,20 +1011,15 @@ public function checkSerialsPurchased(Request $request)
             continue;
         }
 
-        // Already assembled quantity for this product
         $assembledCount = DB::table('inventory')
             ->where('product_id', $productId)
             ->whereNull('deleted_by')
             ->whereNull('deleted_at')
             ->count();
 
-        // How much already used
         $usedQty = $assembledCount * $requiredPerProduct;
-
-        // Available = Purchased − Used
         $availableQty = max($purchasedQty - $usedQty, 0);
 
-        // Check shortage
         if ($availableQty < $neededTotal) {
             $shortages[] = [
                 'sparepart_id'   => $sparepartId,
@@ -1046,24 +1035,20 @@ public function checkSerialsPurchased(Request $request)
     // 7. Final response
     // ------------------------------------------------------
     return response()->json([
-        'serial_validation' => [
-            'purchased'       => array_values(array_diff($purchasedSerials, $existingInventorySerials)),
-            'not_purchased'   => array_values($notPurchasedSerials),
-            'items'           => $items,
-        ],
+        'message' => 'PCB and Barcode serials matched successfully',
+        'serials' => $pcbSerials,
         'sparepart_shortages' => $shortages,
-        'can_assemble'        => count($shortages) === 0,
-        'attempted_quantity'  => $assembleCount,
+        'can_assemble' => count($shortages) === 0,
+        'attempted_quantity' => $assembleCount,
     ]);
 }
 
 
-
 public function availableProductCount()
 {
-    $soldSerials = \App\Models\SaleItem::pluck('serial_no')->toArray();
+    $soldSerials = SaleItem::pluck('serial_no')->toArray();
 
-    $count = \App\Models\Inventory::whereNull('deleted_at')
+    $count = Inventory::whereNull('deleted_at')
         ->whereNotIn('serial_no', $soldSerials)
         ->count();
 
