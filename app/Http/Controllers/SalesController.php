@@ -66,106 +66,160 @@ class SalesController extends Controller
     }
 
     
-    public function store(Request $request)
-    {
-        $validated = $request->validate([
-            'customer_id' => [
-                'required',
-                function ($attribute, $value, $fail) {
-                    $exists = Customer::where('id', $value)
-                        ->whereNull('deleted_at')
-                        ->exists();
-                    if (!$exists) {
-                        $fail("Customer not found.");
-                    }
-                },
-            ],
-
-            'challan_no' => [
-                'required',
-                function ($attribute, $value, $fail) {
-                    $exists = Sale::where('challan_no', $value)
-                        ->whereNull('deleted_at')
-                        ->exists();
-                    if ($exists) {
-                        $fail("Challan No already exists.");
-                    }
-                }
-            ],
-
-           'challan_date'   => 'required|date|before_or_equal:today',
-            'shipment_date'  => 'required|date|before_or_equal:today',
-            'shipment_name' => 'nullable|string',
-            'notes'         => 'nullable|string',
-            'items'         => 'required|array|min:1',
-            'items.*.quantity' => 'required|integer|min:1',
-            'items.*.serial_no' => 'required|string',
-        ]);
-
-        return DB::transaction(function () use ($validated) {
-
-            $sale = Sale::create([
-                'customer_id'   => $validated['customer_id'],
-                'challan_no'    => $validated['challan_no'],
-                'challan_date'  => $validated['challan_date'],
-                'shipment_date' => $validated['shipment_date'],
-                'shipment_name' => $validated['shipment_name'] ?? null,
-                'notes'         => $validated['notes'] ?? null,
-                'created_by'    => Auth::id(),
-            ]);
-
-            $addedSerials = [];
-
-            foreach ($validated['items'] as $item) {
-                $serial = trim($item['serial_no']);
-
-                if (in_array($serial, $addedSerials)) continue;
-
-                $inventory = Inventory::whereRaw('LOWER(TRIM(serial_no)) = ?', [strtolower($serial)])
-                    ->whereRaw('LOWER(TRIM(tested_status)) = ?', ['pass'])
+public function store(Request $request)
+{
+    /* ================= VALIDATION ================= */
+    $validated = $request->validate([
+        'customer_id' => [
+            'required',
+            function ($attribute, $value, $fail) {
+                $exists = Customer::where('id', $value)
                     ->whereNull('deleted_at')
-                    ->whereNotIn('serial_no', function ($q) {
-                        $q->select('serial_no')->from('sale_items')->whereNull('deleted_at');
-                    })
-                    ->first();
+                    ->exists();
 
-                if (!$inventory) {
-                    throw new \Exception("Serial {$serial} invalid or already assigned.");
+                if (!$exists) {
+                    $fail("Customer not found.");
+                }
+            },
+        ],
+
+        'challan_no' => [
+            'required',
+            function ($attribute, $value, $fail) {
+                $exists = Sale::where('challan_no', $value)
+                    ->whereNull('deleted_at')
+                    ->exists();
+
+                if ($exists) {
+                    $fail("Challan No already exists.");
+                }
+            }
+        ],
+
+        'challan_date'   => 'required|date|before_or_equal:today',
+        'shipment_date'  => 'required|date|before_or_equal:today',
+        'shipment_name'  => 'nullable|string',
+        'notes'          => 'nullable|string',
+
+        /* ================= RECEIPT FILES ================= */
+        'receipt_files'   => 'nullable|array',
+        'receipt_files.*' => 'file|mimes:jpg,jpeg,png,pdf|max:5120',
+
+        /* ================= ITEMS ================= */
+        'items'               => 'required|array|min:1',
+        'items.*.quantity'    => 'required|integer|min:1',
+        'items.*.serial_no'   => 'required|string',
+    ]);
+
+    return DB::transaction(function () use ($request, $validated) {
+
+        /* =================================================
+           📁 HANDLE RECEIPT FILES (JSONB)
+           ================================================= */
+        $receiptFiles = [];
+
+        if ($request->file('receipt_files')) {
+            foreach ($request->file('receipt_files') as $file) {
+
+                if (!$file || !$file->isValid()) {
+                    continue;
                 }
 
-                $sale->items()->create([
-                    'quantity'  => $item['quantity'],
-                    'serial_no' => $serial,
-                    'product_id'=> $inventory->product_id,
-                    'created_by'=> Auth::id(),
-                ]);
+                $storedPath = $file->store('uploads/receipts', 'public');
 
-                $addedSerials[] = $serial;
+                $receiptFiles[] = [
+                    'file_name' => $file->getClientOriginalName(),
+                    'file_path' => $storedPath,
+                ];
             }
-
-            return response()->json($sale->load('items.inventory'), 201);
-        });
-    }
-
-    public function show($id)
-    {
-        $sale = Sale::with([
-            'customer:id,customer,email,mobile_no',
-            'items:id,sale_id,serial_no,quantity,product_id',
-            'items.inventory:id,serial_no,tested_status',
-            'items.product:id,name'
-        ])
-        ->whereNull('deleted_at')
-        ->find($id);
-
-        if (!$sale) {
-            return response()->json(['message' => 'Sale not found'], 404);
         }
 
-        return response()->json($sale);
+        /* ================= CREATE SALE ================= */
+        $sale = Sale::create([
+            'customer_id'   => $validated['customer_id'],
+            'challan_no'    => $validated['challan_no'],
+            'challan_date'  => $validated['challan_date'],
+            'shipment_date' => $validated['shipment_date'],
+            'shipment_name' => $validated['shipment_name'] ?? null,
+            'notes'         => $validated['notes'] ?? null,
+            'receipt_files' => $receiptFiles,   // ✅ JSONB stored here
+            'created_by'    => Auth::id(),
+        ]);
+
+        /* ================= ADD SALE ITEMS ================= */
+        $addedSerials = [];
+
+        foreach ($validated['items'] as $item) {
+
+            $serial = trim($item['serial_no']);
+
+            if (in_array($serial, $addedSerials)) {
+                continue;
+            }
+
+            $inventory = Inventory::whereRaw(
+                    'LOWER(TRIM(serial_no)) = ?',
+                    [strtolower($serial)]
+                )
+                ->whereRaw('LOWER(TRIM(tested_status)) = ?', ['pass'])
+                ->whereNull('deleted_at')
+                ->whereNotIn('serial_no', function ($q) {
+                    $q->select('serial_no')
+                      ->from('sale_items')
+                      ->whereNull('deleted_at');
+                })
+                ->first();
+
+            if (!$inventory) {
+                throw new \Exception("Serial {$serial} invalid or already assigned.");
+            }
+
+            $sale->items()->create([
+                'quantity'   => $item['quantity'],
+                'serial_no'  => $serial,
+                'product_id' => $inventory->product_id,
+                'created_by' => Auth::id(),
+            ]);
+
+            $addedSerials[] = $serial;
+        }
+
+        return response()->json(
+            $sale->load('items.inventory'),
+            201
+        );
+    });
+}
+
+
+
+public function show($id)
+{
+    $sale = Sale::with([
+        'customer:id,customer,email,mobile_no'
+    ])
+    ->whereNull('deleted_at')
+    ->find($id);
+
+    if (!$sale) {
+        return response()->json(['message' => 'Sale not found'], 404);
     }
 
-    public function update(Request $request, $id)
+    // Get individual items so we can see serial numbers
+    $items = \App\Models\SaleItem::where('sale_id', $sale->id)
+        ->with('product:id,name')
+        ->get();
+
+    return response()->json([
+        'sale' => $sale,
+        'products' => $items,
+        // If your receipts are stored in a specific attribute or related table:
+        'receipts' => $sale->receipt_files ?? [] 
+    ]);
+}
+
+
+public function update(Request $request, $id)
 {
     $sale = Sale::whereNull('deleted_at')->find($id);
 
@@ -173,7 +227,6 @@ class SalesController extends Controller
         return response()->json(['message' => 'Sale not found'], 404);
     }
 
-    // Validation
     $request->validate([
         'challan_no' => [
             'sometimes',
@@ -182,47 +235,103 @@ class SalesController extends Controller
                     ->where('id', '!=', $id)
                     ->whereNull('deleted_at')
                     ->exists();
+
                 if ($exists) {
                     $fail("Challan No already exists.");
                 }
             }
         ],
-        'customer_id'     => 'sometimes|integer',
-        'challan_date'    => 'sometimes|date|before_or_equal:today',
-        'shipment_date'   => 'sometimes|date|before_or_equal:today',
-        'items'           => 'array',
+        'customer_id'   => 'sometimes|integer',
+        'challan_date'  => 'sometimes|date|before_or_equal:today',
+        'shipment_date' => 'sometimes|date|before_or_equal:today',
+        'shipment_name' => 'nullable|string',
+        'notes'         => 'nullable|string',
+        'receipt_files.*' => 'file|mimes:jpg,jpeg,png,pdf|max:5120',
+        'items' => 'nullable|array',
     ]);
 
     return DB::transaction(function () use ($request, $sale) {
 
-        // 🔥 Update main sale
+
+$existingFiles = is_array($sale->receipt_files)
+    ? $sale->receipt_files
+    : json_decode($sale->receipt_files ?? '[]', true);
+
+        $removedFiles = json_decode($request->removed_receipt_files ?? '[]', true);
+
+        if (!empty($removedFiles)) {
+if (!empty($removedFiles)) {
+    $existingFiles = array_values(array_filter($existingFiles, function ($file) use ($removedFiles) {
+
+        // If stored as array/object with file_path
+        if (is_array($file) && isset($file['file_path'])) {
+            return !in_array($file['file_path'], $removedFiles);
+        }
+
+        // If stored as plain string
+        if (is_string($file)) {
+            return !in_array($file, $removedFiles);
+        }
+
+        return true;
+    }));
+}
+        }
+        if ($request->hasFile('receipt_files')) {
+            foreach ($request->file('receipt_files') as $file) {
+                $existingFiles[] = $file->store('uploads/receipts', 'public');
+            }
+        }
+
+        /* ================= UPDATE SALE HEADER ================= */
+
         $sale->update([
-            'customer_id'   => $request->customer_id,
-            'challan_no'    => $request->challan_no,
-            'challan_date'  => $request->challan_date,
-            'shipment_date' => $request->shipment_date,
-            'shipment_name' => $request->shipment_name,
-            'notes'         => $request->notes,
+            'customer_id'   => $request->customer_id ?? $sale->customer_id,
+            'challan_no'    => $request->challan_no ?? $sale->challan_no,
+            'challan_date'  => $request->challan_date ?? $sale->challan_date,
+            'shipment_date' => $request->shipment_date ?? $sale->shipment_date,
+            'shipment_name' => $request->shipment_name ?? $sale->shipment_name,
+            'notes'         => $request->notes ?? $sale->notes,
+'receipt_files' => $existingFiles,
             'updated_by'    => Auth::id(),
         ]);
 
+        /* ================= SALE ITEMS ================= */
+
         if ($request->has('items')) {
-            $existing = collect($request->items)->pluck('id')->filter();
-            $sale->items()->whereNotIn('id', $existing)->update([
-                'deleted_at' => now(),
-                'deleted_by' => Auth::id()
-            ]);
+
+            $existingIds = collect($request->items)->pluck('id')->filter();
+
+            $sale->items()
+                ->whereNotIn('id', $existingIds)
+                ->update([
+                    'deleted_at' => now(),
+                    'deleted_by' => Auth::id(),
+                ]);
 
             foreach ($request->items as $item) {
-                $serial = trim($item['serial_no']);
 
-                $inventory = Inventory::where('serial_no', $serial)
+                $serialRaw = $item['serial_no'] ?? null;
+                if (is_array($serialRaw)) {
+                    $serialRaw = $serialRaw[0] ?? null;
+                }
+
+                $serial = trim((string) $serialRaw);
+                if ($serial === '') {
+                    throw new \Exception('Serial number is required');
+                }
+
+                $inventory = Inventory::whereRaw(
+                        'LOWER(TRIM(serial_no)) = ?',
+                        [strtolower($serial)]
+                    )
                     ->whereRaw('LOWER(TRIM(tested_status)) = ?', ['pass'])
                     ->whereNull('deleted_at')
                     ->whereNotIn('serial_no', function ($q) use ($sale) {
-                        $q->select('serial_no')->from('sale_items')
-                            ->where('sale_id', '!=', $sale->id)
-                            ->whereNull('deleted_at');
+                        $q->select('serial_no')
+                          ->from('sale_items')
+                          ->where('sale_id', '!=', $sale->id)
+                          ->whereNull('deleted_at');
                     })
                     ->first();
 
@@ -232,14 +341,14 @@ class SalesController extends Controller
 
                 if (!empty($item['id'])) {
                     SaleItem::find($item['id'])->update([
-                        'quantity'   => $item['quantity'],
+                        'quantity'   => $item['quantity'] ?? 1,
                         'serial_no'  => $serial,
                         'product_id' => $inventory->product_id,
                         'updated_by' => Auth::id(),
                     ]);
                 } else {
                     $sale->items()->create([
-                        'quantity'   => $item['quantity'],
+                        'quantity'   => $item['quantity'] ?? 1,
                         'serial_no'  => $serial,
                         'product_id' => $inventory->product_id,
                         'created_by' => Auth::id(),
@@ -248,10 +357,9 @@ class SalesController extends Controller
             }
         }
 
-        return response()->json($sale->load('items.inventory'));
+        return response()->json($sale->load('items.inventory'), 200);
     });
 }
-
 
 
     public function destroy($id)
@@ -511,8 +619,9 @@ public function getSalesWithTotals()
 {
     $sales = Sale::with([
         'customer:id,customer',
-        'items:id,sale_id,product_id,quantity',
-        'items.product:id,name'
+        'items:id,sale_id,product_id,quantity,serial_no',
+        'items.product:id,name',
+        'items.inventory:id,serial_no'
     ])
     ->whereNull('deleted_at')
     ->orderBy('id', 'desc')
@@ -528,8 +637,9 @@ public function getSalesWithTotals()
                 return [
                     'product_name' => $item->product->name ?? 'N/A',
                     'quantity'     => $item->quantity,
+                    'serial_no'    => $item->inventory->serial_no ?? null,
                 ];
-            }),
+            })->values(),
         ];
     });
 
@@ -539,6 +649,9 @@ public function getSalesWithTotals()
         'data'    => $formatted
     ]);
 }
+
+
+
 
 
 // public function getSalesGraph()

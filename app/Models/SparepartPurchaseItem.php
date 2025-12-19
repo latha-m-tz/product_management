@@ -49,5 +49,9 @@ public function productType()
 {
     return $this->belongsTo(ProductType::class, 'product_type_id');
 }
+public function isUsed()
+{
+    return Inventory::whereJsonContains('used_spareparts', $this->id)->exists();
+}
 
 }

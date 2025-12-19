@@ -7,7 +7,6 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Sale extends Model
 {
-    // use HasFactory;
         use SoftDeletes;
 
     protected $table = 'sales';
@@ -19,6 +18,7 @@ class Sale extends Model
         'challan_date',
         'shipment_date',
         'shipment_name', 
+        'receipt_files',
         'notes', 
         'created_at',
         'updated_at',
@@ -27,6 +27,10 @@ class Sale extends Model
         'updated_by',
         'deleted_by'
     ];
+    protected $casts = [
+        'receipt_files' => 'array',
+    ];
+
 
     public function items()
     {
@@ -40,4 +44,5 @@ class Sale extends Model
     {
         return $this->belongsTo(Product::class, 'product_id');
     }
+
 }
