@@ -932,11 +932,29 @@ public function checkSerialsPurchased(Request $request)
     }
 
     // ------------------------------------------------------
+    // 1.5 Check PCB serials already assembled (inventory)
+    // ------------------------------------------------------
+    $alreadyAssembledSerials = DB::table('inventory')
+        ->whereIn('serial_no', $pcbSerials)
+        ->whereNull('deleted_at')
+        ->pluck('serial_no')
+        ->toArray();
+
+    if (!empty($alreadyAssembledSerials)) {
+        return response()->json([
+            'error' => 'PCB serial already assembled',
+            'serials' => array_values($alreadyAssembledSerials),
+            'message' => 'Some PCB serials are already assembled and cannot be reused',
+            'can_assemble' => false,
+        ], 422);
+    }
+
+    // ------------------------------------------------------
     // 2. Detect PCB series (ex: 9_SERIES)
     // ------------------------------------------------------
     $pcbSparepart = Sparepart::where('name', 'LIKE', 'PCB_%')->first();
 
-    preg_match('/PCB_(\d+_SERIES)/', $pcbSparepart->name, $match);
+    preg_match('/PCB_(\d+_SERIES)/', $pcbSparepart->name ?? '', $match);
     $series = $match[1] ?? null;
 
     if (!$series) {
@@ -963,6 +981,7 @@ public function checkSerialsPurchased(Request $request)
     // 4. Fetch purchased BARCODE serials
     // ------------------------------------------------------
     $purchasedBarcodeSerials = SparepartPurchaseItem::where('sparepart_id', $barcodeSparepart->id)
+        ->whereNull('deleted_at')
         ->pluck('serial_no')
         ->toArray();
 
@@ -980,9 +999,9 @@ public function checkSerialsPurchased(Request $request)
         ], 422);
     }
 
-    // ======================================================
-    // 6. SPAREPART SHORTAGE CHECK (UNCHANGED LOGIC)
-    // ======================================================
+    // ------------------------------------------------------
+    // 6. Sparepart quantity validation
+    // ------------------------------------------------------
     $product = Product::find($productId);
     $requirements = $product->sparepart_requirements ?? [];
     $shortages = [];
@@ -996,7 +1015,6 @@ public function checkSerialsPurchased(Request $request)
 
         $purchasedQty = DB::table('sparepart_purchase_items')
             ->where('sparepart_id', $sparepartId)
-            ->whereNull('deleted_by')
             ->whereNull('deleted_at')
             ->sum('quantity');
 
@@ -1013,7 +1031,6 @@ public function checkSerialsPurchased(Request $request)
 
         $assembledCount = DB::table('inventory')
             ->where('product_id', $productId)
-            ->whereNull('deleted_by')
             ->whereNull('deleted_at')
             ->count();
 
