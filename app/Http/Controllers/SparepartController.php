@@ -155,7 +155,7 @@ class SparepartController extends Controller
 
 
 
-   public function destroy($id)
+public function destroy($id)
 {
     $sparepart = Sparepart::find($id);
 
@@ -167,10 +167,20 @@ class SparepartController extends Controller
     }
 
     try {
+        $isUsedInPurchase = DB::table('sparepart_purchase_items') // 👈 CHANGE ONLY IF NEEDED
+            ->where('sparepart_id', $sparepart->id)
+            ->exists();
+
+        if ($isUsedInPurchase) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This component is used in Purchase and cannot be deleted.'
+            ], 409);
+        }
+
+        // Soft delete
         $sparepart->deleted_by = auth()->id();
         $sparepart->save();
-
-        // Perform soft delete
         $sparepart->delete();
 
         return response()->json([
@@ -178,43 +188,24 @@ class SparepartController extends Controller
             'message' => 'Sparepart deleted successfully!'
         ], 200);
 
-    } catch (QueryException $e) {
-
-        Log::info('Sparepart deletion failed', [
-            'error' => $e->getMessage(),
-            'code' => $e->getCode(),
-            'sparepart_id' => $sparepart->id,
-        ]);
-
-        if ($e->getCode() === '23503') {
-            return response()->json([
-                'success' => false,
-                'message' => 'Cannot delete: This spare part is linked to purchase records.'
-            ], 409);
-        }
-
-        return response()->json([
-            'success' => false,
-            'message' => 'Database error: ' . $e->getMessage()
-        ], 500);
-
     } catch (\Exception $e) {
 
-        Log::error("Unexpected error deleting sparepart ID {$id}: {$e->getMessage()}", [
-            'trace' => $e->getTraceAsString()
+        Log::error('Sparepart delete failed', [
+            'sparepart_id' => $id,
+            'error' => $e->getMessage(),
         ]);
 
         return response()->json([
             'success' => false,
-            'message' => 'Unexpected error occurred while deleting spare part.'
+            'message' => 'Failed to delete spare part.'
         ], 500);
     }
 }
+
+
+
 private function calculateSparepartStock()
 {
-    /* =========================
-       PURCHASED
-    ========================== */
     $purchased = DB::table('sparepart_purchase_items as pi')
         ->leftJoin('spareparts as sp', 'pi.sparepart_id', '=', 'sp.id')
         ->whereNull('pi.deleted_at')
@@ -232,9 +223,6 @@ private function calculateSparepartStock()
         return collect();
     }
 
-    /* =========================
-       SERIALS (PCB)
-    ========================== */
     $purchasedSerials = DB::table('sparepart_purchase_items')
         ->whereNull('deleted_at')
         ->whereNull('deleted_by')
