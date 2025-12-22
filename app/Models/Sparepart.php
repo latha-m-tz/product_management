@@ -25,4 +25,8 @@ class Sparepart extends Model
           'deleted_by'
 
     ];
+public function purchaseDetails()
+{
+    return $this->hasMany(PurchaseDetail::class, 'sparepart_id');
+}
 }
