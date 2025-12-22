@@ -119,17 +119,14 @@ public function store(Request $request)
             $productId   = $item['product_id'] ?? null;
             $sparepartId = $item['sparepart_id'] ?? null;
 
-            // Either product or sparepart required
             if (!$productId && !$sparepartId) {
                 return $fail('Each row must contain either Product or Sparepart.');
             }
 
-            // Both not allowed
             if ($productId && $sparepartId) {
                 return $fail('Row cannot contain both Product and Sparepart.');
             }
 
-            // PRODUCT VALIDATION
             if ($productId) {
                 if (empty($item['serial_from']) || empty($item['serial_to'])) {
                     return $fail('Serial From and Serial To are required for product.');
@@ -140,13 +137,11 @@ public function store(Request $request)
                 }
             }
 
-            // SPAREPART VALIDATION
             if ($sparepartId) {
                 if (empty($item['quantity']) || $item['quantity'] <= 0) {
                     return $fail('Quantity is required for sparepart.');
                 }
 
-                // STOCK CHECK
                 $purchased = DB::table('sparepart_purchase_items')
                     ->where('sparepart_id', $sparepartId)
                     ->whereNull('deleted_at')
@@ -172,15 +167,34 @@ public function store(Request $request)
 
     try {
 
+        /* =========================
+           RECEIPT FILES UPLOAD
+        ========================= */
+        $receiptFiles = [];
+
+        if ($request->hasFile('receipt_files')) {
+            foreach ($request->file('receipt_files') as $file) {
+                $path = $file->store('uploads/service_vci/receipts', 'public');
+                $receiptFiles[] = $path;
+            }
+        }
+
+        /* =========================
+           CREATE SERVICE
+        ========================= */
         $service = VCIService::create([
-            'vendor_id'    => $request->vendor_id,
-            'challan_no'   => $request->challan_no,
-            'challan_date' => $request->challan_date,
-            'tracking_no'  => $request->tracking_no,
-            'created_by'   => Auth::id(),
-            'updated_by'   => Auth::id(),
+            'vendor_id'     => $request->vendor_id,
+            'challan_no'    => $request->challan_no,
+            'challan_date'  => $request->challan_date,
+            'tracking_no'   => $request->tracking_no,
+            'receipt_files' => $receiptFiles, // ✅ SAVED
+            'created_by'    => Auth::id(),
+            'updated_by'    => Auth::id(),
         ]);
 
+        /* =========================
+           ITEMS
+        ========================= */
         foreach ($request->items as $index => $item) {
 
             $imagePath = null;
@@ -189,6 +203,7 @@ public function store(Request $request)
                     ->store('uploads/service_vci/items', 'public');
             }
 
+            // PRODUCT
             if (!empty($item['product_id'])) {
 
                 for ($s = $item['serial_from']; $s <= $item['serial_to']; $s++) {
@@ -207,11 +222,12 @@ public function store(Request $request)
                 }
             }
 
+            // SPAREPART
             if (!empty($item['sparepart_id'])) {
 
                 VCIServiceItems::create([
                     'service_vci_id' => $service->id,
-                    'sparepart_id'   => $item['sparepart_id'], // ✅ FIXED
+                    'sparepart_id'   => $item['sparepart_id'],
                     'product_id'     => null,
                     'vci_serial_no'  => null,
                     'quantity'       => $item['quantity'],
@@ -228,18 +244,20 @@ public function store(Request $request)
 
         return response()->json([
             'message' => 'VCI Service created successfully',
-            'data'    => $service->load('items')
+            'data'    => $service->load('items'),
         ], 201);
 
     } catch (\Exception $e) {
+
         DB::rollBack();
 
         return response()->json([
             'message' => 'Something went wrong',
-            'error'   => $e->getMessage()
+            'error'   => $e->getMessage(),
         ], 500);
     }
 }
+
 
 public function update(Request $request, $id)
 {
@@ -431,7 +449,21 @@ public function show($id)
         return response()->json(['message' => 'Service VCI not found'], 404);
     }
 
-    $groupedItems = [];
+    /* =========================
+       RECEIPT FILES
+    ========================= */
+    $receiptFiles = [];
+
+    if (!empty($service->receipt_files)) {
+        foreach ((array) $service->receipt_files as $file) {
+            $receiptFiles[] = asset('storage/' . ltrim($file, '/'));
+        }
+    }
+
+    /* =========================
+       ITEMS GROUPING
+    ========================= */
+    $groupedItems  = [];
     $productGroups = [];
 
     foreach ($service->items as $item) {
@@ -470,32 +502,39 @@ public function show($id)
             continue;
         }
 
+        /* =========================
+           SPARE PART
+        ========================= */
         $groupedItems[] = [
-            'id'            => $item->id,
-            'type'          => 'sparepart',
-            'sparepart_id'  => $item->sparepart_id,
-            'quantity'      => $item->quantity,
-            'status'        => $item->status,
-            'remarks'       => $item->remarks,
-            'upload_image'  => $item->upload_image
+            'id'           => $item->id,
+            'type'         => 'sparepart',
+            'sparepart_id' => $item->sparepart_id,
+            'quantity'     => $item->quantity,
+            'status'       => $item->status,
+            'remarks'      => $item->remarks,
+            'upload_image' => $item->upload_image
                 ? asset('storage/' . ltrim($item->upload_image, '/'))
                 : null,
         ];
     }
 
-    // Merge product groups
+    // Merge grouped products into items list
     $groupedItems = array_merge($groupedItems, array_values($productGroups));
 
+    /* =========================
+       FINAL RESPONSE
+    ========================= */
     return response()->json([
-        'id'           => $service->id,
-        'vendor_id'    => $service->vendor_id,
-        'vendor_name'  => optional($service->vendor)->vendor,
-        'challan_no'   => $service->challan_no,
-        'challan_date' => $service->challan_date,
-        'tracking_no'  => $service->tracking_no,
-        'items'        => $groupedItems,
-        'created_at'   => $service->created_at,
-        'updated_at'   => $service->updated_at,
+        'id'            => $service->id,
+        'vendor_id'     => $service->vendor_id,
+        'vendor_name'   => optional($service->vendor)->vendor,
+        'challan_no'    => $service->challan_no,
+        'challan_date'  => $service->challan_date,
+        'tracking_no'   => $service->tracking_no,
+        'receipt_files' => $receiptFiles,   // ✅ FIXED
+        'items'         => $groupedItems,
+        'created_at'    => $service->created_at,
+        'updated_at'    => $service->updated_at,
     ], 200);
 }
 
