@@ -210,80 +210,191 @@ class SparepartController extends Controller
         ], 500);
     }
 }
+private function calculateSparepartStock()
+{
+    /* =========================
+       PURCHASED
+    ========================== */
+    $purchased = DB::table('sparepart_purchase_items as pi')
+        ->leftJoin('spareparts as sp', 'pi.sparepart_id', '=', 'sp.id')
+        ->whereNull('pi.deleted_at')
+        ->whereNull('pi.deleted_by')
+        ->select(
+            'pi.sparepart_id',
+            'sp.name as sparepart_name',
+            DB::raw('SUM(pi.quantity) as purchased_quantity')
+        )
+        ->groupBy('pi.sparepart_id', 'sp.name')
+        ->get()
+        ->keyBy('sparepart_id');
+
+    if ($purchased->isEmpty()) {
+        return collect();
+    }
+
+    /* =========================
+       SERIALS (PCB)
+    ========================== */
+    $purchasedSerials = DB::table('sparepart_purchase_items')
+        ->whereNull('deleted_at')
+        ->whereNull('deleted_by')
+        ->whereNotNull('serial_no')
+        ->select('sparepart_id', 'serial_no')
+        ->get()
+        ->groupBy('sparepart_id')
+        ->map(fn ($rows) =>
+            $rows->pluck('serial_no')->map(fn ($s) => trim($s))->unique()->values()->toArray()
+        );
+
+    $assembledSerials = DB::table('inventory')
+        ->whereNotNull('serial_no')
+        ->whereNull('deleted_at')
+        ->pluck('serial_no')
+        ->map(fn ($x) => trim($x))
+        ->unique()
+        ->toArray();
+
+    /* =========================
+       ASSEMBLED COUNTS
+    ========================== */
+    $assembledCounts = DB::table('inventory')
+        ->whereNull('deleted_at')
+        ->whereNull('deleted_by')
+        ->select('product_id', DB::raw('COUNT(*) as qty'))
+        ->groupBy('product_id')
+        ->pluck('qty', 'product_id');
+
+    $productRequirements = DB::table('product')
+        ->whereNull('deleted_at')
+        ->select('id', 'sparepart_requirements')
+        ->get()
+        ->map(function ($row) {
+            $row->sparepart_requirements = json_decode($row->sparepart_requirements, true) ?? [];
+            return $row;
+        })
+        ->keyBy('id');
+
+    /* =========================
+       SERVICE DATA
+    ========================== */
+    $pcbInService = DB::table('service_vci_items')
+        ->whereNotNull('vci_serial_no')
+        ->whereIn('status', ['Inward', 'Testing'])
+        ->whereNull('deleted_at')
+        ->get()
+        ->groupBy('sparepart_id');
+
+    $pcbDelivered = DB::table('service_vci_items')
+        ->where('status', 'Delivered')
+        ->whereNotNull('vci_serial_no')
+        ->whereNull('deleted_at')
+        ->pluck('vci_serial_no')
+        ->map(fn ($x) => trim($x))
+        ->toArray();
+
+    $nonPcbReturns = DB::table('service_vci_items')
+        ->where('status', 'Return')
+        ->whereNotNull('quantity')
+        ->whereNull('deleted_at')
+        ->groupBy('sparepart_id')
+        ->select('sparepart_id', DB::raw('SUM(quantity) as qty'))
+        ->pluck('qty', 'sparepart_id');
+
+    /* =========================
+       FINAL CALCULATION
+    ========================== */
+    return $purchased->map(function ($row) use (
+        $purchasedSerials,
+        $assembledSerials,
+        $assembledCounts,
+        $productRequirements,
+        $pcbInService,
+        $pcbDelivered,
+        $nonPcbReturns
+    ) {
+        $id = $row->sparepart_id;
+        $name = strtolower($row->sparepart_name);
+
+        /* ---------- PCB ---------- */
+        if (str_contains($name, 'pcb')) {
+
+            $serviceSerials = collect($pcbInService[$id] ?? [])
+                ->pluck('vci_serial_no')
+                ->map(fn ($x) => trim($x))
+                ->toArray();
+
+            $allPurchased = $purchasedSerials[$id] ?? [];
+
+            $available = array_diff(
+                $allPurchased,
+                $assembledSerials,
+                $pcbDelivered,
+                $serviceSerials
+            );
+
+            return [
+                'sparepart_id'       => $id,
+                'purchased_quantity' => count($allPurchased),
+                'used_quantity'      => count($assembledSerials),
+                'service_quantity'   => count($serviceSerials),
+                'available_quantity' => count($available),
+            ];
+        }
+
+        /* ---------- NON-PCB ---------- */
+        $totalUsed = 0;
+
+        foreach ($productRequirements as $productId => $pr) {
+            $assembledQty = $assembledCounts[$productId] ?? 0;
+
+            $required = collect($pr->sparepart_requirements)
+                ->firstWhere('id', $id)['required_quantity'] ?? 0;
+
+            $totalUsed += $assembledQty * $required;
+        }
+
+        $serviceQty = $nonPcbReturns[$id] ?? 0;
+
+        return [
+            'sparepart_id'       => $id,
+            'purchased_quantity' => (int) $row->purchased_quantity,
+            'used_quantity'      => $totalUsed,
+            'service_quantity'   => $serviceQty,
+            'available_quantity' => max(
+                $row->purchased_quantity - $totalUsed - $serviceQty,
+                0
+            ),
+        ];
+    });
+}
 
 
 
 public function index()
 {
-    // Fetch only active (non-deleted) spareparts
+    $stock = $this->calculateSparepartStock()->keyBy('sparepart_id');
+
     $spareparts = \App\Models\Sparepart::whereNull('deleted_at')->get();
 
-    $sparepartsWithAvailableQty = $spareparts->map(function ($part) {
+    $result = $spareparts->map(function ($part) use ($stock) {
 
-        $purchasedQty = (int) \DB::table('sparepart_purchase_items')
-            ->where('sparepart_id', $part->id)
-            ->whereNull('deleted_at')     // soft delete safe
-            ->whereNull('deleted_by')     // soft delete safe
-            ->sum('quantity');
-
-
-        $usedQty = 0;
-
-        $usages = json_decode($part->sparepart_usages, true);
-
-        if (is_array($usages) && !empty($usages)) {
-
-            // Sparepart has multiple usage rules
-            foreach ($usages as $usage) {
-
-                $productId = $usage['product_id'] ?? null;
-                $requiredPerProduct = (int) ($usage['required_quantity'] ?? $part->required_per_vci ?? 1);
-
-                if ($productId) {
-
-                    // Count assembled VCIs for this product only
-                    $assembledVCIs = \DB::table('inventory')
-                        ->where('product_id', $productId)
-                        ->whereNull('deleted_by')
-                        ->whereNull('deleted_at')
-                        ->count();
-
-                    // Add used quantity
-                    $usedQty += $assembledVCIs * $requiredPerProduct;
-                }
-            }
-
-        } else {
-
-            $assembledVCIs = \DB::table('inventory')
-                ->whereNull('deleted_by')
-                ->whereNull('deleted_at')
-                ->count();
-
-            $requiredPerVci = (int) ($part->required_per_vci ?? 1);
-
-            $usedQty = $assembledVCIs * $requiredPerVci;
-        }
-
-
-        $availableQty = $purchasedQty - $usedQty;
-        if ($availableQty < 0) {
-            $availableQty = 0;
-        }
-
+        $calculated = $stock[$part->id] ?? [
+            'purchased_quantity' => 0,
+            'used_quantity' => 0,
+            'service_quantity' => 0,
+            'available_quantity' => 0,
+        ];
 
         return [
             'id' => $part->id,
             'code' => $part->code,
             'name' => $part->name,
-
             'sparepart_type' => $part->sparepart_type,
-            'sparepart_usages' => $part->sparepart_usages,
-            'required_per_vci' => (int) ($part->required_per_vci ?? 1),
 
-            'purchased_quantity' => $purchasedQty,
-            'used_quantity' => $usedQty,
-            'available_quantity' => $availableQty,
+            'purchased_quantity' => $calculated['purchased_quantity'],
+            'used_quantity' => $calculated['used_quantity'],
+            'service_quantity' => $calculated['service_quantity'],
+            'available_quantity' => $calculated['available_quantity'],
 
             'created_at' => $part->created_at,
             'updated_at' => $part->updated_at,
@@ -291,9 +402,10 @@ public function index()
     });
 
     return response()->json([
-        'spareparts' => $sparepartsWithAvailableQty->values()
-    ], 200);
+        'spareparts' => $result->values()
+    ]);
 }
+
 
     public function deleteItem($purchase_id, $sparepart_id)
     {
