@@ -948,11 +948,13 @@ public function checkSerialsPurchased(Request $request)
             'can_assemble' => false,
         ], 422);
     }
-
-    // ------------------------------------------------------
-    // 2. Detect PCB series (ex: 9_SERIES)
-    // ------------------------------------------------------
-    $pcbSparepart = Sparepart::where('name', 'LIKE', 'PCB_%')->first();
+$pcbSparepart = SparepartPurchaseItem::whereIn('serial_no', $pcbSerials)
+    ->whereHas('sparepart', function ($q) {
+        $q->where('name', 'LIKE', 'PCB_%');
+    })
+    ->with('sparepart')
+    ->first()
+    ->sparepart;
 
     preg_match('/PCB_(\d+_SERIES)/', $pcbSparepart->name ?? '', $match);
     $series = $match[1] ?? null;

@@ -172,9 +172,6 @@ public function store(Request $request)
 
     try {
 
-        // =========================
-        // CREATE SERVICE
-        // =========================
         $service = VCIService::create([
             'vendor_id'    => $request->vendor_id,
             'challan_no'   => $request->challan_no,
@@ -184,9 +181,6 @@ public function store(Request $request)
             'updated_by'   => Auth::id(),
         ]);
 
-        // =========================
-        // STORE ITEMS
-        // =========================
         foreach ($request->items as $index => $item) {
 
             $imagePath = null;
@@ -195,9 +189,6 @@ public function store(Request $request)
                     ->store('uploads/service_vci/items', 'public');
             }
 
-            // =========================
-            // PRODUCT → SERIAL ROWS
-            // =========================
             if (!empty($item['product_id'])) {
 
                 for ($s = $item['serial_from']; $s <= $item['serial_to']; $s++) {
@@ -216,9 +207,6 @@ public function store(Request $request)
                 }
             }
 
-            // =========================
-            // SPAREPART → QUANTITY ROW
-            // =========================
             if (!empty($item['sparepart_id'])) {
 
                 VCIServiceItems::create([
@@ -532,8 +520,6 @@ public function destroyItem($id)
 }
 
 
-
-   
     public function getAllVCISerialNumbers()
     {
         $serialNumbers = VCIServiceItems::whereNull('deleted_at')
@@ -552,7 +538,6 @@ public function destroyItem($id)
             ->with(['serviceVCI', 'product', 'serviceVCI.vendor'])
             ->whereNull('service_vci_items.deleted_at');
 
-        // Filter by from_place (on service)
         if ($request->filled('from_place')) {
             $query->whereHas('serviceVCI', function ($q) use ($request) {
                 $q->where('from_place', $request->from_place)

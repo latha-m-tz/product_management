@@ -186,12 +186,12 @@ class AuthController extends Controller
     ]);
 }
 public function getUsers() {
-    $users = User::select('id', 'username')->get(); // fetch username and id
+    $users = User::select('id', 'username')->get(); 
     return response()->json($users);
 }
 public function index()
 {
-    $users = User::select('id', 'username')->get(); // select only needed fields
+    $users = User::select('id', 'username')->get(); 
     return response()->json($users);
 }
 protected function redirectTo($request)
