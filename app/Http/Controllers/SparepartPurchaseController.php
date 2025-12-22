@@ -184,10 +184,11 @@ public function store(Request $request)
 public function getAvailableSpareparts(Request $request)
 { 
     
-$spareParts = DB::table('spareparts as s')
-    ->select('s.id', 's.name', 's.sparepart_type')
-    ->get();
-
+    $spareParts = DB::table('spareparts as s')
+        ->select('s.id', 's.name', 's.sparepart_type')
+        ->whereNull('s.deleted_at')
+        ->whereNull('s.deleted_by')
+        ->get();
     $vendors = Vendor::with('contactPersons')->get();
     $categories = DB::table('product')
 
