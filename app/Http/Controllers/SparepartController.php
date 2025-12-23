@@ -106,7 +106,7 @@ class SparepartController extends Controller
             function ($attribute, $value, $fail) use ($id) {
                 if ($value) {
                     $exists = Sparepart::where('code', $value)
-                        ->whereNull('deleted_at')   // Soft delete safe
+                        ->whereNull('deleted_at')   
                         ->where('id', '!=', $id)
                         ->exists();
 
@@ -153,8 +153,6 @@ class SparepartController extends Controller
     ], 200);
 }
 
-
-
 public function destroy($id)
 {
     $sparepart = Sparepart::find($id);
@@ -167,18 +165,19 @@ public function destroy($id)
     }
 
     try {
-        $isUsedInPurchase = DB::table('sparepart_purchase_items') // 👈 CHANGE ONLY IF NEEDED
+
+        $isLinkedToActivePurchaseItem = DB::table('sparepart_purchase_items')
             ->where('sparepart_id', $sparepart->id)
+            ->whereNull('deleted_at') 
             ->exists();
 
-        if ($isUsedInPurchase) {
+        if ($isLinkedToActivePurchaseItem) {
             return response()->json([
                 'success' => false,
-                'message' => 'This component is used in Purchase and cannot be deleted.'
+                'message' => 'This component is linked to a purchase item and cannot be deleted.'
             ], 409);
         }
 
-        // Soft delete
         $sparepart->deleted_by = auth()->id();
         $sparepart->save();
         $sparepart->delete();
@@ -188,7 +187,7 @@ public function destroy($id)
             'message' => 'Sparepart deleted successfully!'
         ], 200);
 
-    } catch (\Exception $e) {
+    } catch (\Throwable $e) {
 
         Log::error('Sparepart delete failed', [
             'sparepart_id' => $id,
@@ -201,6 +200,7 @@ public function destroy($id)
         ], 500);
     }
 }
+
 
 
 
