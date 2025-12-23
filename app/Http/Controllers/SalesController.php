@@ -9,6 +9,7 @@ use App\Models\Inventory;
 use App\Models\Customer;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Storage;
 
 class SalesController extends Controller
 {
@@ -68,7 +69,6 @@ class SalesController extends Controller
     
 public function store(Request $request)
 {
-    /* ================= VALIDATION ================= */
     $validated = $request->validate([
         'customer_id' => [
             'required',
@@ -213,11 +213,6 @@ public function show($id)
         ->with('product:id,name')
         ->get();
 
-    /**
-     * ------------------------------------------------------------
-     * Handle receipt files (JSON column OR relationship safe)
-     * ------------------------------------------------------------
-     */
 
     $receipts = [];
 
@@ -225,13 +220,12 @@ public function show($id)
     if (is_array($sale->receipt_files)) {
         $receipts = collect($sale->receipt_files)->map(function ($path) {
             return [
-                'file_path' => asset($path),                 // ✅ FULL URL
+                'file_path' => asset($path),             
                 'file_name' => basename($path),              // ✅ File name only
             ];
         })->values();
     }
 
-    // CASE 2: receipt_files stored as JSON string
     elseif (is_string($sale->receipt_files)) {
         $decoded = json_decode($sale->receipt_files, true);
 
@@ -296,39 +290,37 @@ public function update(Request $request, $id)
 
     return DB::transaction(function () use ($request, $sale) {
 
+        // Decode existing files from DB
+        $existingFiles = is_array($sale->receipt_files)
+            ? $sale->receipt_files
+            : json_decode($sale->receipt_files ?? '[]', true);
 
-$existingFiles = is_array($sale->receipt_files)
-    ? $sale->receipt_files
-    : json_decode($sale->receipt_files ?? '[]', true);
+        // Decode removed files from request
+        $removedFiles = array_map(function($f) {
+            return basename($f); // compare only filenames
+        }, json_decode($request->removed_receipt_files ?? '[]', true));
 
-        $removedFiles = json_decode($request->removed_receipt_files ?? '[]', true);
-
+        // Filter out removed files
         if (!empty($removedFiles)) {
-if (!empty($removedFiles)) {
-    $existingFiles = array_values(array_filter($existingFiles, function ($file) use ($removedFiles) {
-
-        // If stored as array/object with file_path
-        if (is_array($file) && isset($file['file_path'])) {
-            return !in_array($file['file_path'], $removedFiles);
+            $existingFiles = array_values(array_filter($existingFiles, function ($file) use ($removedFiles) {
+                if (is_array($file) && isset($file['file_path'])) {
+                    return !in_array(basename($file['file_path']), $removedFiles);
+                }
+                if (is_string($file)) {
+                    return !in_array(basename($file), $removedFiles);
+                }
+                return true;
+            }));
         }
 
-        // If stored as plain string
-        if (is_string($file)) {
-            return !in_array($file, $removedFiles);
-        }
-
-        return true;
-    }));
-}
-        }
+        // Add new uploaded files
         if ($request->hasFile('receipt_files')) {
             foreach ($request->file('receipt_files') as $file) {
                 $existingFiles[] = $file->store('uploads/receipts', 'public');
             }
         }
 
-        /* ================= UPDATE SALE HEADER ================= */
-
+        // Update sale
         $sale->update([
             'customer_id'   => $request->customer_id ?? $sale->customer_id,
             'challan_no'    => $request->challan_no ?? $sale->challan_no,
@@ -336,16 +328,16 @@ if (!empty($removedFiles)) {
             'shipment_date' => $request->shipment_date ?? $sale->shipment_date,
             'shipment_name' => $request->shipment_name ?? $sale->shipment_name,
             'notes'         => $request->notes ?? $sale->notes,
-'receipt_files' => $existingFiles,
+            'receipt_files' => $existingFiles,
             'updated_by'    => Auth::id(),
         ]);
 
-        /* ================= SALE ITEMS ================= */
-
+        // Handle sale items
         if ($request->has('items')) {
 
             $existingIds = collect($request->items)->pluck('id')->filter();
 
+            // Soft delete removed items
             $sale->items()
                 ->whereNotIn('id', $existingIds)
                 ->update([
@@ -353,6 +345,7 @@ if (!empty($removedFiles)) {
                     'deleted_by' => Auth::id(),
                 ]);
 
+            // Update or create items
             foreach ($request->items as $item) {
 
                 $serialRaw = $item['serial_no'] ?? null;
@@ -404,6 +397,7 @@ if (!empty($removedFiles)) {
         return response()->json($sale->load('items.inventory'), 200);
     });
 }
+
 
 
     public function destroy($id)
