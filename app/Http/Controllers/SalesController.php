@@ -195,6 +195,7 @@ public function store(Request $request)
 
 public function show($id)
 {
+    // Fetch sale with customer
     $sale = Sale::with([
         'customer:id,customer,email,mobile_no'
     ])
@@ -202,19 +203,62 @@ public function show($id)
     ->find($id);
 
     if (!$sale) {
-        return response()->json(['message' => 'Sale not found'], 404);
+        return response()->json([
+            'message' => 'Sale not found'
+        ], 404);
     }
 
-    // Get individual items so we can see serial numbers
+    // Fetch sale items with product info
     $items = \App\Models\SaleItem::where('sale_id', $sale->id)
         ->with('product:id,name')
         ->get();
 
+    /**
+     * ------------------------------------------------------------
+     * Handle receipt files (JSON column OR relationship safe)
+     * ------------------------------------------------------------
+     */
+
+    $receipts = [];
+
+    // CASE 1: receipt_files stored as JSON array in sales table
+    if (is_array($sale->receipt_files)) {
+        $receipts = collect($sale->receipt_files)->map(function ($path) {
+            return [
+                'file_path' => asset($path),                 // ✅ FULL URL
+                'file_name' => basename($path),              // ✅ File name only
+            ];
+        })->values();
+    }
+
+    // CASE 2: receipt_files stored as JSON string
+    elseif (is_string($sale->receipt_files)) {
+        $decoded = json_decode($sale->receipt_files, true);
+
+        if (is_array($decoded)) {
+            $receipts = collect($decoded)->map(function ($path) {
+                return [
+                    'file_path' => asset($path),             // ✅ FULL URL
+                    'file_name' => basename($path),
+                ];
+            })->values();
+        }
+    }
+
+    // CASE 3: receipts stored in related table (recommended)
+    if (method_exists($sale, 'receipts')) {
+        $receipts = $sale->receipts->map(function ($r) {
+            return [
+                'file_path' => asset($r->file_path),         // ✅ FULL URL
+                'file_name' => $r->file_name,
+            ];
+        })->values();
+    }
+
     return response()->json([
-        'sale' => $sale,
+        'sale'     => $sale,
         'products' => $items,
-        // If your receipts are stored in a specific attribute or related table:
-        'receipts' => $sale->receipt_files ?? [] 
+        'receipts' => $receipts
     ]);
 }
 
