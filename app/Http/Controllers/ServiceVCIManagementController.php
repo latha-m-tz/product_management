@@ -267,7 +267,6 @@ public function update(Request $request, $id)
     }
 
     $validator = Validator::make($request->all(), [
-
         'vendor_id'    => 'required|integer|exists:vendors,id',
         'challan_no'   => 'required|string|max:50|unique:service_vci,challan_no,' . $id,
         'challan_date' => 'required|date',
@@ -284,56 +283,7 @@ public function update(Request $request, $id)
 
         'items.*.serial_from'  => 'nullable|integer',
         'items.*.serial_to'    => 'nullable|integer',
-
         'items.*.quantity'     => 'nullable|integer|min:1',
-
-        'items.*' => function ($attribute, $item, $fail) use ($id) {
-
-            $productId   = $item['product_id'] ?? null;
-            $sparepartId = $item['sparepart_id'] ?? null;
-
-            // Either product or sparepart
-            if (!$productId && !$sparepartId) {
-                return $fail('Each row must contain either Product or Sparepart.');
-            }
-
-            if ($productId && $sparepartId) {
-                return $fail('Row cannot contain both Product and Sparepart.');
-            }
-
-            if ($productId) {
-                if (empty($item['serial_from']) || empty($item['serial_to'])) {
-                    return $fail('Serial From and Serial To are required for product.');
-                }
-
-                if ($item['serial_to'] < $item['serial_from']) {
-                    return $fail('Serial To must be greater than or equal to Serial From.');
-                }
-            }
-
-            if ($sparepartId) {
-                if (empty($item['quantity']) || $item['quantity'] <= 0) {
-                    return $fail('Quantity is required for sparepart.');
-                }
-
-                $purchased = DB::table('sparepart_purchase_items')
-                    ->where('sparepart_id', $sparepartId)
-                    ->whereNull('deleted_at')
-                    ->sum('quantity');
-
-                $usedOther = DB::table('service_vci_items')
-                    ->where('sparepart_id', $sparepartId)
-                    ->where('service_vci_id', '!=', $id)
-                    ->whereNull('deleted_at')
-                    ->sum('quantity');
-
-                $available = max(0, $purchased - $usedOther);
-
-                if ($item['quantity'] > $available) {
-                    return $fail("Only {$available} qty available.");
-                }
-            }
-        }
     ]);
 
     if ($validator->fails()) {
@@ -344,9 +294,9 @@ public function update(Request $request, $id)
 
     try {
 
-        // =========================
-        // UPDATE SERVICE HEADER
-        // =========================
+        /* =======================
+           UPDATE SERVICE HEADER
+        ======================== */
         $service->update([
             'vendor_id'    => $request->vendor_id,
             'challan_no'   => $request->challan_no,
@@ -355,17 +305,10 @@ public function update(Request $request, $id)
             'updated_by'   => Auth::id(),
         ]);
 
-        // =========================
-        // DELETE OLD ITEMS (FULL RESET)
-        // =========================
-        $oldItems = $service->items()->whereNull('deleted_at')->get();
-
-        foreach ($oldItems as $old) {
-            if ($old->upload_image && file_exists(public_path($old->upload_image))) {
-                unlink(public_path($old->upload_image));
-            }
-        }
-
+        /* =======================
+           SOFT DELETE OLD ITEMS
+           (DO NOT DELETE IMAGES)
+        ======================== */
         VCIServiceItems::where('service_vci_id', $service->id)
             ->whereNull('deleted_at')
             ->update([
@@ -373,18 +316,36 @@ public function update(Request $request, $id)
                 'deleted_by' => Auth::id(),
             ]);
 
-        // =========================
-        // RE-CREATE ITEMS (SAME AS STORE)
-        // =========================
+        /* =======================
+           RE-CREATE ITEMS
+        ======================== */
         foreach ($request->items as $index => $item) {
 
-            $imagePath = null;
+            // Preserve old image if no new upload
+$imagePath = null;
+
+if (!empty($item['existing_image'])) {
+    // Remove domain + /storage prefix if present
+    $imagePath = str_replace(
+        url('/storage') . '/',
+        '',
+        $item['existing_image']
+    );
+}
+
+            // Replace image if new file uploaded
             if ($request->hasFile("items.$index.upload_image")) {
+
+                // delete old image only if replacing
+                if (!empty($imagePath) && file_exists(storage_path("app/public/$imagePath"))) {
+                    unlink(storage_path("app/public/$imagePath"));
+                }
+
                 $imagePath = $request->file("items.$index.upload_image")
                     ->store('uploads/service_vci/items', 'public');
             }
 
-            // PRODUCT → SERIAL ROWS
+            // PRODUCT → SERIAL RANGE
             if (!empty($item['product_id'])) {
 
                 for ($s = $item['serial_from']; $s <= $item['serial_to']; $s++) {
@@ -403,9 +364,8 @@ public function update(Request $request, $id)
                 }
             }
 
-            // SPAREPART → QUANTITY ROW
+            // SPAREPART → QUANTITY
             if (!empty($item['sparepart_id'])) {
-
                 VCIServiceItems::create([
                     'service_vci_id' => $service->id,
                     'sparepart_id'   => $item['sparepart_id'],
@@ -430,7 +390,6 @@ public function update(Request $request, $id)
 
     } catch (\Exception $e) {
         DB::rollBack();
-
         return response()->json([
             'message' => 'Something went wrong',
             'error'   => $e->getMessage()
@@ -449,81 +408,43 @@ public function show($id)
         return response()->json(['message' => 'Service VCI not found'], 404);
     }
 
-    /* =========================
-       RECEIPT FILES
-    ========================= */
+    // ✅ receipt files: return raw paths
     $receiptFiles = [];
-
     if (!empty($service->receipt_files)) {
         foreach ((array) $service->receipt_files as $file) {
-            $receiptFiles[] = asset('storage/' . ltrim($file, '/'));
+            $receiptFiles[] = ltrim($file, '/');
         }
     }
 
-    /* =========================
-       ITEMS GROUPING
-    ========================= */
-    $groupedItems  = [];
-    $productGroups = [];
+    $items = [];
 
     foreach ($service->items as $item) {
 
-        /* =========================
-           PRODUCT → GROUP SERIALS
-        ========================= */
         if ($item->product_id) {
-
-            $key = $item->product_id . '|' . $item->status;
-
-            if (!isset($productGroups[$key])) {
-                $productGroups[$key] = [
-                    'id'           => $item->id,
-                    'type'         => 'product',
-                    'product_id'   => $item->product_id,
-                    'serial_from'  => $item->vci_serial_no,
-                    'serial_to'    => $item->vci_serial_no,
-                    'status'       => $item->status,
-                    'remarks'      => $item->remarks,
-                    'upload_image' => $item->upload_image
-                        ? asset('storage/' . ltrim($item->upload_image, '/'))
-                        : null,
-                ];
-            } else {
-                $productGroups[$key]['serial_from'] = min(
-                    $productGroups[$key]['serial_from'],
-                    $item->vci_serial_no
-                );
-                $productGroups[$key]['serial_to'] = max(
-                    $productGroups[$key]['serial_to'],
-                    $item->vci_serial_no
-                );
-            }
-
+            $items[] = [
+                'id'           => $item->id,
+                'type'         => 'product',
+                'product_id'   => $item->product_id,
+                'serial_from'  => $item->vci_serial_no,
+                'serial_to'    => $item->vci_serial_no,
+                'status'       => $item->status,
+                'remarks'      => $item->remarks,
+                'upload_image' => $item->upload_image, // ✅ RAW PATH
+            ];
             continue;
         }
 
-        /* =========================
-           SPARE PART
-        ========================= */
-        $groupedItems[] = [
+        $items[] = [
             'id'           => $item->id,
             'type'         => 'sparepart',
             'sparepart_id' => $item->sparepart_id,
             'quantity'     => $item->quantity,
             'status'       => $item->status,
             'remarks'      => $item->remarks,
-            'upload_image' => $item->upload_image
-                ? asset('storage/' . ltrim($item->upload_image, '/'))
-                : null,
+            'upload_image' => $item->upload_image, // ✅ RAW PATH
         ];
     }
 
-    // Merge grouped products into items list
-    $groupedItems = array_merge($groupedItems, array_values($productGroups));
-
-    /* =========================
-       FINAL RESPONSE
-    ========================= */
     return response()->json([
         'id'            => $service->id,
         'vendor_id'     => $service->vendor_id,
@@ -531,12 +452,14 @@ public function show($id)
         'challan_no'    => $service->challan_no,
         'challan_date'  => $service->challan_date,
         'tracking_no'   => $service->tracking_no,
-        'receipt_files' => $receiptFiles,   // ✅ FIXED
-        'items'         => $groupedItems,
+        'receipt_files' => $receiptFiles,
+        'items'         => $items,
         'created_at'    => $service->created_at,
         'updated_at'    => $service->updated_at,
     ], 200);
 }
+
+   
 
 public function destroyItem($id)
 {

@@ -10,7 +10,7 @@ use App\Models\Customer;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
-
+use Illuminate\Database\QueryException;
 class SalesController extends Controller
 {
     public function index()
@@ -69,133 +69,156 @@ class SalesController extends Controller
     
 public function store(Request $request)
 {
-    $validated = $request->validate([
-        'customer_id' => [
-            'required',
-            function ($attribute, $value, $fail) {
-                $exists = Customer::where('id', $value)
-                    ->whereNull('deleted_at')
-                    ->exists();
+    try {
 
-                if (!$exists) {
-                    $fail("Customer not found.");
+        $validated = $request->validate([
+            /* ================= CUSTOMER ================= */
+            'customer_id' => [
+                'required',
+                function ($attribute, $value, $fail) {
+                    $exists = Customer::where('id', $value)
+                        ->whereNull('deleted_at')
+                        ->exists();
+
+                    if (!$exists) {
+                        $fail("Customer not found.");
+                    }
+                },
+            ],
+
+            /* ================= CHALLAN ================= */
+            'challan_no' => [
+                'required',
+                function ($attribute, $value, $fail) {
+                    if (Sale::where('challan_no', $value)->exists()) {
+                        $fail("Challan No already exists.");
+                    }
                 }
-            },
-        ],
+            ],
 
-        'challan_no' => [
-            'required',
-            function ($attribute, $value, $fail) {
-                $exists = Sale::where('challan_no', $value)
-                    ->whereNull('deleted_at')
-                    ->exists();
+            'challan_date'   => 'required|date|before_or_equal:today',
+            'shipment_date'  => 'required|date|before_or_equal:today',
+            'shipment_name'  => 'nullable|string',
+            'notes'          => 'nullable|string',
 
-                if ($exists) {
-                    $fail("Challan No already exists.");
+            /* ================= RECEIPTS ================= */
+            'existing_receipts'   => 'nullable|array',
+            'existing_receipts.*' => 'string',
+
+            'receipt_files'       => 'nullable|array',
+            'receipt_files.*'     => 'file|mimes:jpg,jpeg,png,pdf|max:5120',
+
+            /* ================= ITEMS ================= */
+            'items'               => 'required|array|min:1',
+            'items.*.quantity'    => 'required|integer|min:1',
+            'items.*.serial_no'   => 'required|string',
+        ]);
+
+        return DB::transaction(function () use ($request, $validated) {
+
+            /* ================= HANDLE RECEIPTS ================= */
+            $receiptFiles = [];
+
+            // 1️⃣ Keep existing receipts
+            if ($request->filled('existing_receipts')) {
+                foreach ($request->input('existing_receipts') as $name) {
+                    $receiptFiles[] = [
+                        'file_name' => $name,
+                        'file_path' => 'uploads/receipts/' . $name,
+                    ];
                 }
             }
-        ],
 
-        'challan_date'   => 'required|date|before_or_equal:today',
-        'shipment_date'  => 'required|date|before_or_equal:today',
-        'shipment_name'  => 'nullable|string',
-        'notes'          => 'nullable|string',
+            // 2️⃣ Add newly uploaded receipts
+            if ($request->hasFile('receipt_files')) {
+                foreach ($request->file('receipt_files') as $file) {
 
-        /* ================= RECEIPT FILES ================= */
-        'receipt_files'   => 'nullable|array',
-        'receipt_files.*' => 'file|mimes:jpg,jpeg,png,pdf|max:5120',
+                    if (!$file || !$file->isValid()) {
+                        continue;
+                    }
 
-        /* ================= ITEMS ================= */
-        'items'               => 'required|array|min:1',
-        'items.*.quantity'    => 'required|integer|min:1',
-        'items.*.serial_no'   => 'required|string',
-    ]);
+                    $storedPath = $file->store('uploads/receipts', 'public');
 
-    return DB::transaction(function () use ($request, $validated) {
+                    $receiptFiles[] = [
+                        'file_name' => $file->getClientOriginalName(),
+                        'file_path' => $storedPath,
+                    ];
+                }
+            }
 
-        /* =================================================
-           📁 HANDLE RECEIPT FILES (JSONB)
-           ================================================= */
-        $receiptFiles = [];
+            /* ================= CREATE SALE ================= */
+            $sale = Sale::create([
+                'customer_id'   => $validated['customer_id'],
+                'challan_no'    => $validated['challan_no'],
+                'challan_date'  => $validated['challan_date'],
+                'shipment_date' => $validated['shipment_date'],
+                'shipment_name' => $validated['shipment_name'] ?? null,
+                'notes'         => $validated['notes'] ?? null,
+                'receipt_files' => $receiptFiles,
+                'created_by'    => Auth::id(),
+            ]);
 
-        if ($request->file('receipt_files')) {
-            foreach ($request->file('receipt_files') as $file) {
+            /* ================= ADD ITEMS ================= */
+            $addedSerials = [];
 
-                if (!$file || !$file->isValid()) {
+            foreach ($validated['items'] as $item) {
+
+                $serial = trim($item['serial_no']);
+
+                if (in_array($serial, $addedSerials)) {
                     continue;
                 }
 
-                $storedPath = $file->store('uploads/receipts', 'public');
+                $inventory = Inventory::whereRaw(
+                        'LOWER(TRIM(serial_no)) = ?',
+                        [strtolower($serial)]
+                    )
+                    ->whereRaw('LOWER(TRIM(tested_status)) = ?', ['pass'])
+                    ->whereNull('deleted_at')
+                    ->whereNotIn('serial_no', function ($q) {
+                        $q->select('serial_no')
+                          ->from('sale_items')
+                          ->whereNull('deleted_at');
+                    })
+                    ->first();
 
-                $receiptFiles[] = [
-                    'file_name' => $file->getClientOriginalName(),
-                    'file_path' => $storedPath,
-                ];
+                if (!$inventory) {
+                    throw new \Exception("Serial {$serial} invalid or already assigned.");
+                }
+
+                $sale->items()->create([
+                    'quantity'   => $item['quantity'],
+                    'serial_no'  => $serial,
+                    'product_id' => $inventory->product_id,
+                    'created_by' => Auth::id(),
+                ]);
+
+                $addedSerials[] = $serial;
             }
+
+            return response()->json(
+                $sale->load('items.inventory'),
+                201
+            );
+        });
+
+    } catch (QueryException $e) {
+
+        // PostgreSQL unique constraint violation
+        if ($e->getCode() === '23505') {
+            return response()->json([
+                'message' => 'Challan No already exists.'
+            ], 422);
         }
 
-        /* ================= CREATE SALE ================= */
-        $sale = Sale::create([
-            'customer_id'   => $validated['customer_id'],
-            'challan_no'    => $validated['challan_no'],
-            'challan_date'  => $validated['challan_date'],
-            'shipment_date' => $validated['shipment_date'],
-            'shipment_name' => $validated['shipment_name'] ?? null,
-            'notes'         => $validated['notes'] ?? null,
-            'receipt_files' => $receiptFiles,   // ✅ JSONB stored here
-            'created_by'    => Auth::id(),
-        ]);
-
-        /* ================= ADD SALE ITEMS ================= */
-        $addedSerials = [];
-
-        foreach ($validated['items'] as $item) {
-
-            $serial = trim($item['serial_no']);
-
-            if (in_array($serial, $addedSerials)) {
-                continue;
-            }
-
-            $inventory = Inventory::whereRaw(
-                    'LOWER(TRIM(serial_no)) = ?',
-                    [strtolower($serial)]
-                )
-                ->whereRaw('LOWER(TRIM(tested_status)) = ?', ['pass'])
-                ->whereNull('deleted_at')
-                ->whereNotIn('serial_no', function ($q) {
-                    $q->select('serial_no')
-                      ->from('sale_items')
-                      ->whereNull('deleted_at');
-                })
-                ->first();
-
-            if (!$inventory) {
-                throw new \Exception("Serial {$serial} invalid or already assigned.");
-            }
-
-            $sale->items()->create([
-                'quantity'   => $item['quantity'],
-                'serial_no'  => $serial,
-                'product_id' => $inventory->product_id,
-                'created_by' => Auth::id(),
-            ]);
-
-            $addedSerials[] = $serial;
-        }
-
-        return response()->json(
-            $sale->load('items.inventory'),
-            201
-        );
-    });
+        throw $e;
+    }
 }
 
 
 
 public function show($id)
 {
-    // Fetch sale with customer
     $sale = Sale::with([
         'customer:id,customer,email,mobile_no'
     ])
@@ -203,47 +226,51 @@ public function show($id)
     ->find($id);
 
     if (!$sale) {
-        return response()->json([
-            'message' => 'Sale not found'
-        ], 404);
+        return response()->json(['message' => 'Sale not found'], 404);
     }
 
-    // Fetch sale items with product info
     $items = \App\Models\SaleItem::where('sale_id', $sale->id)
         ->with('product:id,name')
         ->get();
 
+    $receipts = collect();
 
-    $receipts = [];
 
-    // CASE 1: receipt_files stored as JSON array in sales table
-    if (is_array($sale->receipt_files)) {
-        $receipts = collect($sale->receipt_files)->map(function ($path) {
-            return [
-                'file_path' => asset($path),             
-                'file_name' => basename($path),              // ✅ File name only
-            ];
-        })->values();
-    }
+    if (!empty($sale->receipt_files)) {
 
-    elseif (is_string($sale->receipt_files)) {
-        $decoded = json_decode($sale->receipt_files, true);
+        $files = is_string($sale->receipt_files)
+            ? json_decode($sale->receipt_files, true)
+            : $sale->receipt_files;
 
-        if (is_array($decoded)) {
-            $receipts = collect($decoded)->map(function ($path) {
-                return [
-                    'file_path' => asset($path),             // ✅ FULL URL
-                    'file_name' => basename($path),
-                ];
-            })->values();
+        if (is_array($files)) {
+            $receipts = collect($files)->map(function ($file) {
+
+                // 🔹 If stored as object {file_path, file_name}
+                if (is_array($file)) {
+                    return [
+                        'file_path' => asset($file['file_path'] ?? ''),
+                        'file_name' => $file['file_name'] ?? '',
+                    ];
+                }
+
+                // 🔹 If stored as string
+                if (is_string($file)) {
+                    return [
+                        'file_path' => asset($file),
+                        'file_name' => basename($file),
+                    ];
+                }
+
+                return null;
+            })->filter()->values();
         }
     }
 
-    // CASE 3: receipts stored in related table (recommended)
-    if (method_exists($sale, 'receipts')) {
+   
+    if (method_exists($sale, 'receipts') && $sale->receipts->count()) {
         $receipts = $sale->receipts->map(function ($r) {
             return [
-                'file_path' => asset($r->file_path),         // ✅ FULL URL
+                'file_path' => asset($r->file_path),
                 'file_name' => $r->file_name,
             ];
         })->values();
@@ -255,6 +282,7 @@ public function show($id)
         'receipts' => $receipts
     ]);
 }
+
 
 
 public function update(Request $request, $id)
@@ -290,17 +318,14 @@ public function update(Request $request, $id)
 
     return DB::transaction(function () use ($request, $sale) {
 
-        // Decode existing files from DB
         $existingFiles = is_array($sale->receipt_files)
             ? $sale->receipt_files
             : json_decode($sale->receipt_files ?? '[]', true);
 
-        // Decode removed files from request
         $removedFiles = array_map(function($f) {
-            return basename($f); // compare only filenames
+            return basename($f); 
         }, json_decode($request->removed_receipt_files ?? '[]', true));
 
-        // Filter out removed files
         if (!empty($removedFiles)) {
             $existingFiles = array_values(array_filter($existingFiles, function ($file) use ($removedFiles) {
                 if (is_array($file) && isset($file['file_path'])) {
@@ -313,7 +338,6 @@ public function update(Request $request, $id)
             }));
         }
 
-        // Add new uploaded files
         if ($request->hasFile('receipt_files')) {
             foreach ($request->file('receipt_files') as $file) {
                 $existingFiles[] = $file->store('uploads/receipts', 'public');
@@ -422,7 +446,6 @@ public function update(Request $request, $id)
     }
 public function getSoldAndNotSoldSerials($productId)
 {
-    // Fetch all assembled serials (keep as objects)
     $assembled = Inventory::where('product_id', $productId)
         ->whereNull('deleted_at')
         ->get();
