@@ -332,7 +332,6 @@ public function update(Request $request, $id)
 {
     $purchase = SparepartPurchase::findOrFail($id);
 
-    /* ================= VALIDATION ================= */
     $request->validate([
         'vendor_id' => 'required|integer|exists:vendors,id',
 
@@ -483,15 +482,12 @@ public function update(Request $request, $id)
             ], 422);
         }
 
-        /* ================= DELETE OLD ITEMS ================= */
         SparepartPurchaseItem::where('purchase_id', $purchase->id)->delete();
 
-        /* ================= INSERT NEW ITEMS ================= */
         foreach ($serialsToInsert as $record) {
             SparepartPurchaseItem::create($record);
         }
 
-        /* ================= UPDATE TOTAL QUANTITY ================= */
         $purchase->update([
             'quantity' => count(
                 array_filter($serialsToInsert, fn ($r) => !empty($r['serial_no']))
@@ -528,6 +524,34 @@ public function destroy($id)
         ], 404);
     }
 
+    /* ===== Get all serial numbers of this purchase ===== */
+    $serials = SparepartPurchaseItem::where('purchase_id', $id)
+        ->whereNull('deleted_at')
+        ->pluck('serial_no');
+
+    /* ===== Check if already assembled (Inventory) ===== */
+    $alreadyAssembled = \App\Models\Inventory::whereIn('serial_no', $serials)
+        ->whereNull('deleted_at')
+        ->exists();
+
+    if ($alreadyAssembled) {
+        return response()->json([
+            'message' => 'Already assembled – failed to delete this purchase'
+        ], 409);
+    }
+
+    /* ===== Optional: Check service usage ===== */
+    $usedInService = DB::table('service_vci_items')
+        ->whereIn('vci_serial_no', $serials)
+        ->whereNull('deleted_at')
+        ->exists();
+
+    if ($usedInService) {
+        return response()->json([
+            'message' => 'Serial numbers are in service – failed to delete this purchase'
+        ], 409);
+    }
+
     DB::beginTransaction();
 
     try {
@@ -541,28 +565,28 @@ public function destroy($id)
 
         $purchase->deleted_by = auth()->id();
         $purchase->save();
-        $purchase->delete(); 
+        $purchase->delete();
 
         DB::commit();
 
         return response()->json([
-            'message' => 'Purchase and its items deleted successfully'
+            'message' => 'Purchase deleted successfully'
         ], 200);
 
     } catch (\Throwable $e) {
         DB::rollBack();
 
-        Log::error("Failed deleting purchase ID {$id}: {$e->getMessage()}", [
-            'trace' => $e->getTraceAsString()
+        Log::error("Failed deleting purchase {$id}", [
+            'error' => $e->getMessage()
         ]);
 
         return response()->json([
             'message' => 'Delete failed',
-            'error' => $e->getMessage(),
-            'line' => $e->getLine(),
+            'error'   => $e->getMessage()
         ], 500);
     }
 }
+
 
 
 
