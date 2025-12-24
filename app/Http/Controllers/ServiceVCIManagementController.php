@@ -80,14 +80,10 @@ public function index()
 
     return response()->json($data, 200);
 }
-
 public function store(Request $request)
 {
     $validator = Validator::make($request->all(), [
 
-        // =========================
-        // SERVICE FIELDS
-        // =========================
         'vendor_id'    => 'required|integer|exists:vendors,id',
         'challan_no'   => 'required|string|max:50|unique:service_vci,challan_no',
         'challan_date' => 'required|date',
@@ -259,9 +255,13 @@ public function store(Request $request)
 }
 
 
+
+
+
 public function update(Request $request, $id)
 {
     $service = VCIService::whereNull('deleted_at')->find($id);
+
     if (!$service) {
         return response()->json(['message' => 'Service VCI not found'], 404);
     }
@@ -271,6 +271,10 @@ public function update(Request $request, $id)
         'challan_no'   => 'required|string|max:50|unique:service_vci,challan_no,' . $id,
         'challan_date' => 'required|date',
         'tracking_no'  => 'nullable|string|max:50',
+
+        /* ✅ RECEIPTS */
+        'receipt_files'     => 'nullable|array',
+        'receipt_files.*'   => 'file|mimes:jpg,jpeg,png,pdf|max:2048',
 
         'items' => 'required|array|min:1',
 
@@ -294,21 +298,37 @@ public function update(Request $request, $id)
 
     try {
 
-        /* =======================
-           UPDATE SERVICE HEADER
-        ======================== */
+        /* ============================
+           🔹 HANDLE RECEIPT FILES
+        ============================ */
+        $existingReceipts = $service->receipt_files ?? [];
+        $receiptPaths = [];
+
+        if ($request->hasFile('receipt_files')) {
+            foreach ($request->file('receipt_files') as $file) {
+                $path = $file->store('uploads/service_vci/receipts', 'public');
+                $receiptPaths[] = $path;
+            }
+        }
+
+        // merge old + new receipts
+        $finalReceipts = array_merge($existingReceipts, $receiptPaths);
+
+        /* ============================
+           🔹 UPDATE SERVICE HEADER
+        ============================ */
         $service->update([
             'vendor_id'    => $request->vendor_id,
             'challan_no'   => $request->challan_no,
             'challan_date' => $request->challan_date,
             'tracking_no'  => $request->tracking_no,
+            'receipt_files'=> $finalReceipts,
             'updated_by'   => Auth::id(),
         ]);
 
-        /* =======================
-           SOFT DELETE OLD ITEMS
-           (DO NOT DELETE IMAGES)
-        ======================== */
+        /* ============================
+           🔹 SOFT DELETE OLD ITEMS
+        ============================ */
         VCIServiceItems::where('service_vci_id', $service->id)
             ->whereNull('deleted_at')
             ->update([
@@ -316,28 +336,22 @@ public function update(Request $request, $id)
                 'deleted_by' => Auth::id(),
             ]);
 
-        /* =======================
-           RE-CREATE ITEMS
-        ======================== */
+        /* ============================
+           🔹 RE-CREATE ITEMS
+        ============================ */
         foreach ($request->items as $index => $item) {
 
-            // Preserve old image if no new upload
-$imagePath = null;
+            // keep old image
+            $imagePath = null;
 
-if (!empty($item['existing_image'])) {
-    // Remove domain + /storage prefix if present
-    $imagePath = str_replace(
-        url('/storage') . '/',
-        '',
-        $item['existing_image']
-    );
-}
+            if (!empty($item['existing_image'])) {
+                $imagePath = str_replace(url('/storage') . '/', '', $item['existing_image']);
+            }
 
-            // Replace image if new file uploaded
+            // replace image
             if ($request->hasFile("items.$index.upload_image")) {
 
-                // delete old image only if replacing
-                if (!empty($imagePath) && file_exists(storage_path("app/public/$imagePath"))) {
+                if ($imagePath && file_exists(storage_path("app/public/$imagePath"))) {
                     unlink(storage_path("app/public/$imagePath"));
                 }
 
@@ -345,15 +359,12 @@ if (!empty($item['existing_image'])) {
                     ->store('uploads/service_vci/items', 'public');
             }
 
-            // PRODUCT → SERIAL RANGE
+            // PRODUCT
             if (!empty($item['product_id'])) {
-
                 for ($s = $item['serial_from']; $s <= $item['serial_to']; $s++) {
                     VCIServiceItems::create([
                         'service_vci_id' => $service->id,
                         'product_id'     => $item['product_id'],
-                        'sparepart_id'   => null,
-                        'quantity'       => null,
                         'vci_serial_no'  => $s,
                         'status'         => $item['status'],
                         'remarks'        => $item['remarks'] ?? null,
@@ -364,13 +375,11 @@ if (!empty($item['existing_image'])) {
                 }
             }
 
-            // SPAREPART → QUANTITY
+            // SPAREPART
             if (!empty($item['sparepart_id'])) {
                 VCIServiceItems::create([
                     'service_vci_id' => $service->id,
                     'sparepart_id'   => $item['sparepart_id'],
-                    'product_id'     => null,
-                    'vci_serial_no'  => null,
                     'quantity'       => $item['quantity'],
                     'status'         => $item['status'],
                     'remarks'        => $item['remarks'] ?? null,
@@ -385,7 +394,7 @@ if (!empty($item['existing_image'])) {
 
         return response()->json([
             'message' => 'VCI Service updated successfully',
-            'data'    => $service->load('items')
+            'data'    => $service->fresh()->load('items')
         ], 200);
 
     } catch (\Exception $e) {
@@ -396,7 +405,6 @@ if (!empty($item['existing_image'])) {
         ], 500);
     }
 }
-
 
 public function show($id)
 {
