@@ -72,7 +72,6 @@ public function store(Request $request)
     try {
 
         $validated = $request->validate([
-            /* ================= CUSTOMER ================= */
             'customer_id' => [
                 'required',
                 function ($attribute, $value, $fail) {
@@ -86,7 +85,6 @@ public function store(Request $request)
                 },
             ],
 
-            /* ================= CHALLAN ================= */
             'challan_no' => [
                 'required',
                 function ($attribute, $value, $fail) {
@@ -101,14 +99,12 @@ public function store(Request $request)
             'shipment_name'  => 'nullable|string',
             'notes'          => 'nullable|string',
 
-            /* ================= RECEIPTS ================= */
             'existing_receipts'   => 'nullable|array',
             'existing_receipts.*' => 'string',
 
             'receipt_files'       => 'nullable|array',
-            'receipt_files.*'     => 'file|mimes:jpg,jpeg,png,pdf|max:5120',
+            'receipt_files.*'     => 'file|mimes:jpg,jpeg,png,pdf|max:102400',
 
-            /* ================= ITEMS ================= */
             'items'               => 'required|array|min:1',
             'items.*.quantity'    => 'required|integer|min:1',
             'items.*.serial_no'   => 'required|string',
@@ -116,10 +112,8 @@ public function store(Request $request)
 
         return DB::transaction(function () use ($request, $validated) {
 
-            /* ================= HANDLE RECEIPTS ================= */
             $receiptFiles = [];
 
-            // 1️⃣ Keep existing receipts
             if ($request->filled('existing_receipts')) {
                 foreach ($request->input('existing_receipts') as $name) {
                     $receiptFiles[] = [
@@ -129,7 +123,6 @@ public function store(Request $request)
                 }
             }
 
-            // 2️⃣ Add newly uploaded receipts
             if ($request->hasFile('receipt_files')) {
                 foreach ($request->file('receipt_files') as $file) {
 
@@ -146,7 +139,6 @@ public function store(Request $request)
                 }
             }
 
-            /* ================= CREATE SALE ================= */
             $sale = Sale::create([
                 'customer_id'   => $validated['customer_id'],
                 'challan_no'    => $validated['challan_no'],
@@ -158,7 +150,6 @@ public function store(Request $request)
                 'created_by'    => Auth::id(),
             ]);
 
-            /* ================= ADD ITEMS ================= */
             $addedSerials = [];
 
             foreach ($validated['items'] as $item) {
@@ -204,7 +195,6 @@ public function store(Request $request)
 
     } catch (QueryException $e) {
 
-        // PostgreSQL unique constraint violation
         if ($e->getCode() === '23505') {
             return response()->json([
                 'message' => 'Challan No already exists.'
@@ -214,6 +204,8 @@ public function store(Request $request)
         throw $e;
     }
 }
+
+
 
 
 
@@ -312,7 +304,7 @@ public function update(Request $request, $id)
         'shipment_date' => 'sometimes|date|before_or_equal:today',
         'shipment_name' => 'nullable|string',
         'notes'         => 'nullable|string',
-        'receipt_files.*' => 'file|mimes:jpg,jpeg,png,pdf|max:5120',
+        'receipt_files.*' => 'file|mimes:jpg,jpeg,png,pdf|max:102400',
         'items' => 'nullable|array',
     ]);
 
