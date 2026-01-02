@@ -686,9 +686,6 @@ public function deleteItem($purchaseId, $itemId)
         ], 404);
     }
 
-    /* =================================================
-       🔒 INVENTORY CHECK (SERIAL-BASED — CORRECT)
-       ================================================= */
     if ($item->from_serial && $item->to_serial) {
 
         $usedInInventory = Inventory::whereBetween(
@@ -706,9 +703,6 @@ public function deleteItem($purchaseId, $itemId)
         }
     }
 
-    /* =================================================
-       🔒 SALES CHECK (THROUGH INVENTORY, NOT SALE_ITEMS)
-       ================================================= */
     if ($item->from_serial && $item->to_serial) {
 
         $usedInSales = Inventory::whereBetween(
@@ -727,9 +721,6 @@ public function deleteItem($purchaseId, $itemId)
         }
     }
 
-    /* =================================================
-       🔒 SERVICE / REPAIR CHECK (SERIAL-BASED)
-       ================================================= */
     if ($item->from_serial && $item->to_serial) {
 
         $usedInService = Inventory::whereBetween(
@@ -748,9 +739,6 @@ public function deleteItem($purchaseId, $itemId)
         }
     }
 
-    /* =================================================
-       🗑 SOFT DELETE
-       ================================================= */
     $item->deleted_by = auth()->id();
     $item->save();
     $item->delete();
@@ -870,21 +858,17 @@ public function overall()
     }
 
     /* ================= PURCHASED SERIALS ================= */
-    $purchasedSerialsRaw = DB::table('sparepart_purchase_items')
+    $purchasedSerials = DB::table('sparepart_purchase_items')
         ->whereNull('deleted_at')
         ->whereNull('deleted_by')
         ->whereNotNull('serial_no')
         ->select('sparepart_id', 'serial_no')
-        ->get();
-
-    $purchasedSerials = [];
-    foreach ($purchasedSerialsRaw as $r) {
-        $purchasedSerials[$r->sparepart_id][] = trim($r->serial_no);
-    }
-
-    foreach ($purchasedSerials as $id => $list) {
-        $purchasedSerials[$id] = array_values(array_unique($list));
-    }
+        ->get()
+        ->groupBy('sparepart_id')
+        ->map(fn ($rows) =>
+            $rows->pluck('serial_no')->map(fn ($x) => trim($x))->unique()->values()->toArray()
+        )
+        ->toArray();
 
     /* ================= ASSEMBLED SERIALS ================= */
     $assembledSerials = DB::table('inventory')
@@ -897,11 +881,11 @@ public function overall()
 
     /* ================= ASSEMBLED COUNTS ================= */
     $assembledCounts = DB::table('inventory')
-        ->whereNull('deleted_by')
         ->whereNull('deleted_at')
-        ->select('product_id', DB::raw('COUNT(*) as assembled_qty'))
+        ->whereNull('deleted_by')
+        ->select('product_id', DB::raw('COUNT(*) as qty'))
         ->groupBy('product_id')
-        ->pluck('assembled_qty', 'product_id');
+        ->pluck('qty', 'product_id');
 
     /* ================= PRODUCT REQUIREMENTS ================= */
     $productRequirements = DB::table('product')
@@ -914,47 +898,41 @@ public function overall()
         })
         ->keyBy('id');
 
-    /* ================= PCB IN SERVICE ================= */
-    $pcbInService = DB::table('service_vci_items')
+    /* ================= SERVICE SERIALS (WITH STATUS) ================= */
+    $serviceSerials = DB::table('service_vci_items')
         ->whereNotNull('vci_serial_no')
-        ->whereIn('status', ['Inward', 'Testing'])
         ->whereNull('deleted_at')
         ->select('sparepart_id', 'vci_serial_no', 'status')
         ->get()
         ->groupBy('sparepart_id');
 
-    $pcbDelivered = DB::table('service_vci_items')
-        ->whereNotNull('vci_serial_no')
-        ->where('status', 'Delivered')
+    /* ================= NON-PCB SERVICE QTY ================= */
+    $serviceQty = DB::table('service_vci_items')
         ->whereNull('deleted_at')
-        ->pluck('vci_serial_no')
-        ->map(fn ($x) => trim($x))
-        ->toArray();
-
-    /* ================= NON PCB RETURNS ================= */
-    $nonPcbReturns = DB::table('service_vci_items')
         ->whereNotNull('quantity')
-        ->where('status', 'Return')
-        ->whereNull('deleted_at')
-        ->select('sparepart_id', DB::raw('SUM(quantity) as return_qty'))
+        ->select(
+            'sparepart_id',
+            DB::raw("SUM(CASE WHEN status='Inward' THEN quantity ELSE 0 END) as inward_qty"),
+            DB::raw("SUM(CASE WHEN status='Return' THEN quantity ELSE 0 END) as return_qty")
+        )
         ->groupBy('sparepart_id')
-        ->pluck('return_qty', 'sparepart_id');
+        ->get()
+        ->keyBy('sparepart_id');
 
     /* ================= FINAL RESPONSE ================= */
     $final = $purchased->map(function ($row) use (
         $purchasedSerials,
         $assembledSerials,
+        $serviceSerials,
         $productRequirements,
         $assembledCounts,
-        $pcbInService,
-        $pcbDelivered,
-        $nonPcbReturns
+        $serviceQty
     ) {
         $id   = $row->sparepart_id;
         $name = strtolower($row->sparepart_name);
 
         /* =====================================================
-           SERIAL BASED (PCB + BARCODE STICKERS)
+           SERIAL BASED (PCB / BARCODE / STICKER)
         ===================================================== */
         if (
             str_contains($name, 'pcb') ||
@@ -964,15 +942,27 @@ public function overall()
 
             $allPurchased = $purchasedSerials[$id] ?? [];
 
-            $serviceItems = collect($pcbInService[$id] ?? [])
-                ->map(fn ($x) => trim($x->vci_serial_no))
+            $serviceRows = collect($serviceSerials[$id] ?? []);
+
+            // ❌ Blocked serials (NOT allowed)
+            $blockedSerials = $serviceRows
+                ->whereIn('status', ['Testing', 'Return'])
+                ->pluck('vci_serial_no')
+                ->map(fn ($x) => trim($x))
                 ->toArray();
 
-            $availableList = array_diff(
+            $deliveredSerials = $serviceRows
+                ->where('status', 'Delivered')
+                ->pluck('vci_serial_no')
+                ->map(fn ($x) => trim($x))
+                ->toArray();
+
+            // ✅ AVAILABLE = Purchased − Assembled − Blocked − Delivered
+            $availableSerials = array_diff(
                 $allPurchased,
                 $assembledSerials,
-                $pcbDelivered,
-                $serviceItems
+                $blockedSerials,
+                $deliveredSerials
             );
 
             return [
@@ -982,33 +972,37 @@ public function overall()
                 'type'               => 'serial',
 
                 'purchased_quantity' => count($allPurchased),
-                'service_quantity'   => count($serviceItems),
-                'available_quantity' => count($availableList),
+                'available_quantity' => count($availableSerials),
 
                 'available_serials'  => array_map(fn ($s) => [
                     'serial'  => $s,
                     'barcode' => $s
-                ], array_values($availableList)),
+                ], array_values($availableSerials)),
             ];
         }
 
-        /* =====================================================
-           QUANTITY BASED (NORMAL NON-PCB)
-        ===================================================== */
         $purchasedQty = (int) $row->purchased_quantity;
-        $totalUsed = 0;
+        $usedQty = 0;
 
-        foreach ($productRequirements as $productId => $pr) {
-            $assembledQty = $assembledCounts[$productId] ?? 0;
+        foreach ($productRequirements as $pid => $pr) {
+            $assembled = $assembledCounts[$pid] ?? 0;
             $required = collect($pr->sparepart_requirements)
                 ->firstWhere('id', $id)['required_quantity'] ?? 0;
 
-            $totalUsed += $assembledQty * $required;
+            $usedQty += $assembled * $required;
         }
 
-        $serviceQty   = $nonPcbReturns[$id] ?? 0;
-        $availableQty = max($purchasedQty - $totalUsed - $serviceQty, 0);
+        $svc = $serviceQty[$id] ?? null;
+        $serviceInward = $svc->inward_qty ?? 0;
+        $serviceReturn = $svc->return_qty ?? 0;
 
+    $availableQty = max(
+    $purchasedQty
+    - $usedQty
+    - $serviceInward
+    - $serviceReturn,
+    0
+);
         return [
             'sparepart_id'       => $id,
             'sparepart_name'     => $row->sparepart_name,
@@ -1016,14 +1010,16 @@ public function overall()
             'type'               => 'non-pcb',
 
             'purchased_quantity' => $purchasedQty,
-            'used_quantity'      => $totalUsed,
-            'service_quantity'   => $serviceQty,
+            'used_quantity'      => $usedQty,
+            'service_inward'     => $serviceInward,
+            'service_return'     => $serviceReturn,
             'available_quantity' => $availableQty,
         ];
     })->values();
 
     return response()->json($final);
 }
+
 
 
 
